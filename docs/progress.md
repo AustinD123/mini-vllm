@@ -1,6 +1,6 @@
 # Progress
 
-Current problem: **P4**
+Current problem: **P5**
 Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 
 | # | Problem | Status |
@@ -8,7 +8,7 @@ Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 | 1 | Block pool | reviewed |
 | 2 | Slot mapping | reviewed |
 | 3 | append_token / can_append | reviewed |
-| 4 | Contiguous baseline + utilization | todo |
+| 4 | Contiguous baseline + utilization | reviewed |
 | 5 | Sequence state machine | todo |
 | 6 | Static batching baseline | todo |
 | 7 | FCFS continuous batching | todo |
