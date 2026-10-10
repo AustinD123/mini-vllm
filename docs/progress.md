@@ -1,6 +1,6 @@
 # Progress
 
-Current problem: **P7**
+Current problem: **P8**
 Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 
 | # | Problem | Status |
@@ -11,7 +11,7 @@ Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 | 4 | Contiguous baseline + utilization | reviewed |
 | 5 | Sequence state machine | reviewed |
 | 6 | Static batching baseline | reviewed |
-| 7 | FCFS continuous batching | todo |
+| 7 | FCFS continuous batching | reviewed |
 | 8 | Token budget | todo |
 | 9 | Chunked prefill | todo |
 | 10 | Preemption (recompute) | todo |
