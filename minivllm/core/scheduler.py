@@ -134,3 +134,82 @@ class Scheduler:
         for seq in finished_sequences:
             self.tables.pop(seq.seq_id).free_all()
         return finished_sequences
+
+
+def split_budget(decoding: list[Sequence], prefilling: list[Sequence], token_budget: int) -> dict[int, int]:
+    """Split one step's token budget between decodes and prefills.
+
+    Problem 8 — Per-step token budget
+
+    Story
+        A step can only do so much work before its latency becomes too high. The
+        budget caps the tokens computed in one step. Decodes come first because
+        each running request is waiting on exactly one token, so they are cheap
+        and every one of them matters for latency. Prefills use whatever is left.
+
+    Operations
+        split_budget(decoding, prefilling, token_budget) -> dict[seq_id, tokens]
+            decoding: running sequences that need one token each this step
+            prefilling: waiting sequences whose prompt is not computed yet, in
+                        arrival order
+            returns the tokens each scheduled sequence computes this step
+
+    Choices (the spec leaves these open)
+        Each decode takes 1 token. Decodes are taken in list order until the
+        budget runs out. Any decode that doesn't fit this step is left out.
+        Prefills get the remaining budget, in list order, and only whole
+        prompts: a prefill gets its full uncomputed tokens or nothing.
+        Strict FCFS: once a prefill doesn't fit, stop. Do not skip ahead to a
+        shorter one. (Splitting a long prompt across steps is problem 9.)
+        token_budget == 0 schedules nothing.
+
+    Errors
+        Raises ValueError when token_budget < 0.
+
+    Example (token_budget = 64)
+        decoding:   ten sequences ids 0..9, each with 1 uncomputed token
+        prefilling: id 10 with 54 uncomputed, id 11 with 10 uncomputed
+
+        decodes take 10 -> 54 left
+        id 10 needs 54 -> fits -> 0 left
+        id 11 needs 10 -> does not fit, nothing left
+        result: {0: 1, ..., 9: 1, 10: 54}
+
+        token_budget = 4 with the same ten decodes
+        result: {0: 1, 1: 1, 2: 1, 3: 1}   (no prefill)
+
+    Constraints
+        Runs in time proportional to the number of sequences passed in.
+        Does not change any sequence's state.
+
+    Edge cases to think about
+        What happens to the prefill when the budget runs out exactly at a decode?
+        Can a decode be scheduled with more than 1 token?
+        A prefill of exactly the remaining budget: does it fit?
+        Why must a prefill that doesn't fit block the ones behind it?
+
+    Tests
+        tests/test_p08_token_budget.py covers the 64-budget split, a budget
+        smaller than the number of decodes, strict FCFS for prefills, and budget 0.
+    """
+    if token_budget < 0:
+        raise ValueError("token_budget must be non-negative")
+    allocation: dict[int, int] = {}
+    candidates = decoding + prefilling
+    decodes = [seq for seq in candidates if seq.num_uncomputed() == 1]
+    prefills = [seq for seq in candidates if seq.num_uncomputed() > 1]
+    for seq in decodes:
+        if token_budget <= 0:
+            break
+        allocation[seq.seq_id] = 1
+        token_budget -= 1
+    for seq in prefills:
+        if token_budget <= 0:
+            break
+        needed = seq.num_uncomputed()
+        if needed <= token_budget:
+            allocation[seq.seq_id] = needed
+            token_budget -= needed
+        else:
+            break  # strict FCFS: stop if the first prefill doesn't fit
+    return allocation
