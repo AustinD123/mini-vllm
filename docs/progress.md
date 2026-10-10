@@ -1,6 +1,6 @@
 # Progress
 
-Current problem: **P6**
+Current problem: **P7**
 Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 
 | # | Problem | Status |
@@ -10,7 +10,7 @@ Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 | 3 | append_token / can_append | reviewed |
 | 4 | Contiguous baseline + utilization | reviewed |
 | 5 | Sequence state machine | reviewed |
-| 6 | Static batching baseline | scaffolded |
+| 6 | Static batching baseline | reviewed |
 | 7 | FCFS continuous batching | todo |
 | 8 | Token budget | todo |
 | 9 | Chunked prefill | todo |
