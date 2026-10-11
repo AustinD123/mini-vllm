@@ -5,8 +5,9 @@ description: Commit the work for problem N at the end of a session — the solut
 
 # Commit problem N
 
-Makes one commit containing the work for problem N. It only runs when the
-human asks. It never pushes.
+Makes one commit containing the work for problem N, then pushes it to
+`origin`. It only runs when the human asks. Everything goes on the branch
+that is checked out (normally `master`). Do not create feature branches.
 
 ## Procedure
 
@@ -39,10 +40,16 @@ human asks. It never pushes.
    Use the problem name from `docs/progress.md`. Pass the message with a
    heredoc so the trailer stays intact.
 7. Run `git log -1 --stat` and show the result.
+8. Push the current branch to `origin`: `git push origin HEAD`. If there is
+   no `origin` remote, say so and stop after the commit. Do not add a remote
+   on your own. If the push is rejected (for example, the remote has commits
+   you don't have), report it and stop. Do not force-push or rebase to get
+   around it.
+9. Show the push result, including the remote URL.
 
 ## Limits
 
-- Never `git push`, `git commit --amend`, `git reset`, or `--no-verify`.
+- Never `git commit --amend`, `git reset`, `git push --force`, or `--no-verify`.
 - If a pre-commit hook fails, report it and stop. Do not bypass it.
 - One problem per commit. If other unrelated changes are staged, unstage
   them and say so.

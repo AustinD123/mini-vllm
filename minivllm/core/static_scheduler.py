@@ -87,8 +87,7 @@ class StaticScheduler:
         """
         if self.batch_size < 1:
             raise ValueError("batch_size must be at least 1")
-        self.waiting.append(seq)    
-        
+        self.waiting.append(seq)
 
     def step(self) -> SchedulerOutput:
         """Return the uncomputed tokens of every running sequence for this step."""
@@ -100,7 +99,6 @@ class StaticScheduler:
                 seq.set_status(SeqStatus.RUNNING)
         output = {seq.seq_id: seq.num_uncomputed() for seq in self.running}
         return SchedulerOutput(output)
-        
 
     def update(self, output: SchedulerOutput, sampled: dict[int, int]) -> list[Sequence]:
         """Apply one step's results and return the sequences that finished.
@@ -121,4 +119,4 @@ class StaticScheduler:
             else:
                 still_running.append(seq)
         self.running = still_running
-        return finished_sequences       
+        return finished_sequences
