@@ -1,6 +1,6 @@
 # Progress
 
-Current problem: **P12**
+Current problem: **P13**
 Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 
 | # | Problem | Status |
@@ -16,7 +16,7 @@ Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 | 9 | Chunked prefill | reviewed |
 | 10 | Preemption (recompute) | reviewed |
 | 11 | Cost model | reviewed |
-| 12 | Metrics from event log | todo |
+| 12 | Metrics from event log | reviewed |
 | 13 | Invariant checker + fuzz | todo |
 | 14 | Chained block hashing | todo |
 | 15 | Refcounted sharing | todo |
