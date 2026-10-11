@@ -34,13 +34,18 @@ def test_request_arriving_mid_run_joins_next_step():
 
 
 def test_strict_fcfs_small_request_does_not_jump_ahead():
-    sched = Scheduler(BlockPool(2), BLOCK_SIZE, max_batch=4, token_budget=1000)
-    big = make(0, 40, 5)  # needs 3 blocks, pool has 2
-    small = make(1, 4, 1)  # would fit, but is behind big
+    # blocker holds 1 of 3 blocks; big needs 3 (waits); small needs 1 (would fit)
+    sched = Scheduler(BlockPool(3), BLOCK_SIZE, max_batch=4, token_budget=1000)
+    blocker = make(0, 4, 1)
+    sched.add_request(blocker)
+    sched.step()
+    big = make(1, 40, 1)
+    small = make(2, 4, 1)
     sched.add_request(big)
     sched.add_request(small)
     out, _ = drive(sched)
-    assert out.num_tokens == {}
+    assert 1 not in out.num_tokens
+    assert 2 not in out.num_tokens
     assert small.status == SeqStatus.WAITING
 
 

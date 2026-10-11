@@ -73,7 +73,7 @@ Tests
 
 from __future__ import annotations
 
-import queue
+from collections import deque
 
 from minivllm.core.block_pool import BlockPool
 from minivllm.core.block_table import BlockTable
@@ -92,28 +92,59 @@ class Scheduler:
         self.block_size = block_size
         self.max_batch = max_batch
         self.token_budget = token_budget
-        self.waiting: queue.Queue[Sequence] = queue.Queue()
+        self.waiting: deque[Sequence] = deque()
         self.running: list[Sequence] = []
         self.tables: dict[int, BlockTable] = {}
 
     def add_request(self, seq: Sequence) -> None:
         """Queue ``seq`` behind every request already waiting."""
+        capacity = self.pool.num_blocks * self.block_size
+        if seq.prompt_len + seq.max_new_tokens > capacity:
+            raise ValueError(f"Request {seq.seq_id} cannot fit in the pool")
         self.tables[seq.seq_id] = BlockTable(self.pool, self.block_size)
-        self.waiting.put(seq)
+        self.waiting.append(seq)
 
-    def step(self) -> SchedulerOutput:
-        """Grow running sequences, admit waiting ones in FCFS order, and return the step's work."""
-        while len(self.running) < self.max_batch and not self.waiting.empty():
-            seq = self.waiting.queue[0]  # peek at the first waiting sequence
+    def _admit(self) -> None:
+        """Admit waiting sequences in FCFS order while a slot and room for the prompt exist."""
+        while len(self.running) < self.max_batch and self.waiting:
+            seq = self.waiting[0]
             table = self.tables[seq.seq_id]
             if not table.can_append(seq.num_uncomputed()):
-                break  # stop admitting if the first one doesn't fit
+                break
             table.append_tokens(seq.num_uncomputed())
-            self.running.append(self.waiting.get())
+            self.waiting.popleft()
+            self.running.append(seq)
             seq.set_status(SeqStatus.RUNNING)
-        output = {seq.seq_id: seq.num_uncomputed() for seq in self.running}
-        return SchedulerOutput(output)
 
+    def _preempt(self, victim: Sequence) -> None:
+        """Free the victim's blocks and put it at the front of the waiting queue."""
+        self.running.remove(victim)
+        self.tables[victim.seq_id].free_all()
+        victim.preempt_recompute()
+        self.waiting.appendleft(victim)
+
+    def step(self) -> SchedulerOutput:
+        """Admit, plan this step's tokens, grow blocks (preempting if needed), and return the work."""
+        self._admit()
+        decoding = [seq for seq in self.running if seq.num_uncomputed() == 1]
+        prefilling = [seq for seq in self.running if seq.num_uncomputed() > 1]
+        allocation, _ = plan_chunks(decoding, prefilling, self.token_budget)
+        for seq in list(self.running):
+            n = allocation.get(seq.seq_id, 0)
+            if n == 0:
+                continue
+            table = self.tables[seq.seq_id]
+            # room needed beyond what the table already holds for this sequence
+            needed = seq.num_computed_tokens + n - table.num_tokens
+            while needed > 0 and not table.can_append(needed):
+                victim = choose_victim(self.running)
+                self._preempt(victim)
+                allocation.pop(victim.seq_id, None)
+                if victim is seq:
+                    break
+            if seq.status == SeqStatus.RUNNING and needed > 0:
+                table.append_tokens(needed)
+        return SchedulerOutput(allocation)
 
     def update(self, output: SchedulerOutput, sampled: dict[int, int]) -> list[Sequence]:
         """Apply one step's results. Finished sequences free their blocks and are returned."""
@@ -123,8 +154,8 @@ class Scheduler:
         finished_sequences = []
         still_running = []
         for seq in self.running:
-            if seq.seq_id in sampled:
-                seq.on_tokens_computed(output.num_tokens[seq.seq_id], True)
+            if seq.seq_id in output.num_tokens:
+                seq.on_tokens_computed(output.num_tokens[seq.seq_id], seq.seq_id in sampled)
             if seq.is_finished():
                 seq.set_status(SeqStatus.FINISHED)
                 finished_sequences.append(seq)
@@ -213,3 +244,137 @@ def split_budget(decoding: list[Sequence], prefilling: list[Sequence], token_bud
         else:
             break  # strict FCFS: stop if the first prefill doesn't fit
     return allocation
+
+
+def plan_chunks(
+    decoding: list[Sequence], prefilling: list[Sequence], token_budget: int
+) -> tuple[dict[int, int], list[int]]:
+    """Plan one step with chunked prefill. Returns (allocation, sample_ids).
+
+    Problem 9 — Chunked prefill
+
+    Story
+        A long prompt, such as 4000 tokens, can take many steps of compute. If
+        it had to fit in one step, it would hold up every running request for
+        that whole step. Chunking lets a prompt advance a slice at a time, so
+        decodes keep getting their one token per step and the prompt still
+        finishes.
+
+    Operations
+        plan_chunks(decoding, prefilling, token_budget) -> (allocation, sample_ids)
+            allocation: seq_id -> tokens computed this step
+            sample_ids: seq_ids that produce an output token this step
+
+    Choices (the spec leaves these open)
+        Decodes are planned first, as in problem 8. Each takes 1 token.
+        Prefills take what is left, in arrival order. A prefill may take a
+        partial chunk: min(uncomputed, remaining budget). Once the budget hits
+        0, stop.
+        A decode always samples, because its one token is its next output.
+        A prefill samples only when its chunk covers all of its uncomputed
+        tokens. A partial chunk does not sample.
+        token_budget == 0 schedules nothing.
+
+    Errors
+        Raises ValueError when token_budget < 0.
+
+    Example (token_budget = 256)
+        No decodes, one prompt of 1000 tokens (id 0):
+        step 1: {0: 256}                 samples: none
+        step 2: {0: 256}                 samples: none
+        step 3: {0: 256}                 samples: none
+        step 4: {0: 232}                 samples: [0]   (chunk completes the prompt)
+
+        One decode (id 1) running next to the same 1000-token prompt (id 0):
+        step 1: {1: 1, 0: 255}           samples: [1]
+        step 2: {1: 1, 0: 255}           samples: [1]
+        step 3: {1: 1, 0: 255}           samples: [1]
+        step 4: {1: 1, 0: 235}           samples: [1, 0]
+
+    Constraints
+        Runs in time proportional to the number of sequences passed in.
+        Does not change any sequence's state.
+
+    Edge cases to think about
+        What is num_uncomputed for a prompt that is already partly computed?
+        A prompt of exactly the remaining budget: is it a full chunk, and does it sample?
+        Why must a sample only happen on the chunk that finishes the prompt?
+        What do the chunks add up to, and how would you check that?
+
+    Tests
+        tests/test_p09_chunked_prefill.py covers the 1000-token prompt split into
+        four steps, samples only on the last chunk, a decode that is never starved
+        alongside a long prompt, and budget boundaries.
+    """
+    if token_budget < 0:
+        raise ValueError("Token budget cannot be negative.")
+    allocation: dict[int, int] = {}
+    sample_ids: list[int] = []
+    for seq in decoding:
+        if token_budget <= 0:
+            break
+        allocation[seq.seq_id] = 1
+        token_budget -= 1
+        if seq.num_uncomputed() == 1:
+            sample_ids.append(seq.seq_id)
+    for seq in prefilling:
+        if token_budget <= 0:
+            break
+        needed = seq.num_uncomputed()
+        chunk = min(needed, token_budget)
+        if chunk > 0:
+            allocation[seq.seq_id] = chunk
+            token_budget -= chunk
+            if chunk == needed:
+                sample_ids.append(seq.seq_id)
+    return allocation, sample_ids
+
+
+def choose_victim(running: list[Sequence]) -> Sequence:
+    """Pick the sequence to preempt when a running sequence cannot get a block.
+
+    Problem 10 — Preemption (recompute)
+
+    Story
+        The pool can run out mid-sequence. Decodes keep needing one more block
+        as they grow, and a finished request only frees its blocks when it
+        ends. Something has to give. The engine preempts one running sequence:
+        it frees that sequence's blocks so the others can keep growing, and the
+        victim recomputes its state later. Its outputs are kept, so no output
+        text is lost.
+
+    Operations
+        choose_victim(running) -> Sequence
+            returns the most recently arrived sequence in ``running``
+
+    Choices (the spec leaves these open)
+        "Newest" means the largest arrival_time. Ties are not expected.
+        The scheduler, not this function, frees the victim's blocks, sets it
+        to PREEMPTED, and puts it at the front of the waiting queue.
+
+    Errors
+        Raises ValueError when ``running`` is empty.
+
+    Example
+        running: A (arrival 0.0), B (arrival 1.0)
+        choose_victim([A, B]) -> B
+        choose_victim([]) -> raises ValueError
+
+    Constraints
+        Runs in O(n) time over the running sequences. Does not change any sequence.
+
+    Edge cases to think about
+        What should happen when there is only one running sequence?
+        Why preempt the newest rather than the oldest? What does the oldest already have?
+        Could the victim be the sequence that needs the block?
+
+    Tests
+        tests/test_p10_preemption.py covers the newest being the victim, and the
+        scheduler preempting under a small pool, with every request still finishing,
+        rejecting a request that can never fit, and not admitting new requests
+        while a preempted one waits.
+    """
+    if not running: 
+        raise ValueError("No running sequences to choose from.")
+    return max(running, key=lambda seq: seq.arrival_time)
+
