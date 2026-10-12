@@ -23,3 +23,11 @@ content). This becomes the blog post.
 - **A decode-list sequence with prompt left sampled early.** Fixed: only sequences with exactly 1 uncomputed token sample from the decode path.
 - **Open: a sequence in both the decode and prefill lists** still counts against the budget twice (same as P8). Decide whether that's an error or silently deduplicated.
 - **Open: running sequences don't reserve blocks for decode tokens.** Admission reserves the prompt only, so a long decode can outgrow its blocks. Needed before preemption (P10).
+
+---
+
+## P16 review notes (LRU cache of freed blocks)
+
+- **Eviction is not O(1) in the worst case.** `_evict_least_recent` uses `next(iter(self.lru))` on a plain dict. Deleted entries stay at the front of the dict until it resizes, so repeated front evictions get slower as the cache grows. Measured: 5,000 evictions from 10,000 entries took 6 ms, and 50,000 evictions from 100,000 entries took 579 ms (about 10× per eviction for 10× the size). Open: pick a structure that removes the oldest entry in O(1).
+- **A miss stops the hit search.** Blocks after an evicted block are recomputed even if they are still cached, because their KV depends on the evicted block.
+- **Cached blocks break the P13 checker's invariant 1** once the scheduler uses the cache, since a refcount-zero cached block is neither free nor owned. Add the LRU to that count before the two are combined.
