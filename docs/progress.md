@@ -1,6 +1,6 @@
 # Progress
 
-Current problem: **P13**
+Current problem: **P15**
 Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 
 | # | Problem | Status |
@@ -18,7 +18,7 @@ Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 | 11 | Cost model | reviewed |
 | 12 | Metrics from event log | reviewed |
 | 13 | Invariant checker + fuzz | reviewed |
-| 14 | Chained block hashing | todo |
+| 14 | Chained block hashing | reviewed |
 | 15 | Refcounted sharing | todo |
 | 16 | LRU cached blocks | todo |
 | 17 | Hand-written causal attention | todo |
