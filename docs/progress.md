@@ -17,7 +17,7 @@ Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 | 10 | Preemption (recompute) | reviewed |
 | 11 | Cost model | reviewed |
 | 12 | Metrics from event log | reviewed |
-| 13 | Invariant checker + fuzz | todo |
+| 13 | Invariant checker + fuzz | reviewed |
 | 14 | Chained block hashing | todo |
 | 15 | Refcounted sharing | todo |
 | 16 | LRU cached blocks | todo |

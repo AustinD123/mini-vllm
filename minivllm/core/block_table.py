@@ -201,6 +201,11 @@ class BlockTable:
 
 
     @property
+    def block_ids(self) -> list[int]:
+        """Block ids this table holds, in token order."""
+        return list(self._blocks)
+
+    @property
     def num_tokens(self) -> int:
         """Number of tokens currently stored in this table."""
         return self._num_tokens

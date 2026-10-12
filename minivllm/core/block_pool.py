@@ -112,6 +112,11 @@ class BlockPool:
         self._free.append(block_id)
 
     @property
+    def free_block_ids(self) -> set[int]:
+        """Ids that are currently free."""
+        return set(self._free)
+
+    @property
     def num_free(self) -> int:
         """Number of block ids currently free."""
         return len(self._free)
