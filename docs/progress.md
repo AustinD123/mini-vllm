@@ -1,6 +1,6 @@
 # Progress
 
-Current problem: **P16**
+Current problem: **P18**
 Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 
 | # | Problem | Status |
@@ -20,8 +20,8 @@ Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 | 13 | Invariant checker + fuzz | reviewed |
 | 14 | Chained block hashing | reviewed |
 | 15 | Refcounted sharing | reviewed |
-| 16 | LRU cached blocks | scaffolded |
-| 17 | Hand-written causal attention | todo |
+| 16 | LRU cached blocks | reviewed |
+| 17 | Hand-written causal attention | reviewed |
 | 18 | Hand-written decode loop | todo |
 | 19 | KV pool + scatter | todo |
 | 20 | Paged attention, one sequence | todo |
