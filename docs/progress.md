@@ -1,6 +1,6 @@
 # Progress
 
-Current problem: **P21**
+Current problem: **P22**
 Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 
 | # | Problem | Status |
@@ -25,7 +25,7 @@ Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 | 18 | Hand-written decode loop | reviewed |
 | 19 | KV pool + scatter | reviewed |
 | 20 | Paged attention, one sequence | reviewed |
-| 21 | Packed batch | todo |
+| 21 | Packed batch | reviewed |
 | 22 | GQA | todo |
 | 23 | HF backend + exactness | todo |
 | 24 | KV pool sizing | todo |
