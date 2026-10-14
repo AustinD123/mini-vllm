@@ -76,4 +76,4 @@ def num_blocks_for_memory(free_bytes: int, config, dtype: torch.dtype, block_siz
         raise ValueError(f"block_size {block_size} must be positive")
     bytes_per_token = kv_bytes_per_token(config, dtype)
     bytes_per_block = bytes_per_token * block_size
-    return free_bytes // bytes_per_block
+    return int(free_bytes // bytes_per_block)

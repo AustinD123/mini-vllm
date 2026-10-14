@@ -61,7 +61,7 @@ def test_pool_built_from_fp16_sizing_fits_the_budget():
     num_blocks = 10
     free = num_blocks * BLOCK * kv_bytes_per_token(QWEN, torch.float16)
     assert num_blocks_for_memory(free, QWEN, torch.float16, BLOCK) == num_blocks
-    pool = KVPool(QWEN.num_hidden_layers, num_blocks, BLOCK, QWEN.num_key_value_heads, QWEN.head_dim)
+    pool = KVPool(QWEN.num_hidden_layers, num_blocks, BLOCK, QWEN.num_key_value_heads, QWEN.head_dim, dtype=torch.float16)
     pool_bytes = (pool.k.numel() + pool.v.numel()) * pool.k.element_size()
     assert pool_bytes <= free
 

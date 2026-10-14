@@ -84,6 +84,8 @@ def paged_attention_single(
         raise ValueError(f"q must have shape [num_heads, Tq, head_dim], got {q.shape}")
     if q.shape[0] != pool.k.shape[3]:
         raise ValueError(f"q has {q.shape[0]} heads but the pool stores {pool.k.shape[3]} kv heads")
+    if q.shape[2] != pool.k.shape[4]:
+        raise ValueError(f"q has head_dim {q.shape[2]} but the pool stores {pool.k.shape[4]}")
     Tq = q.shape[1]
     if Tq > context_len:
         raise ValueError(f"Tq {Tq} cannot be greater than context_len {context_len}")
