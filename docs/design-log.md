@@ -40,3 +40,11 @@ Checkpoint answer: TODO (human to fill)
 ## Finding: repetition_penalty in HF generate under greedy decoding (2026-10-14)
 
 ## Decision: hash after compute, and the same-step sharing consequence (2026-10-14)
+
+## Decision: decode blocks stay non-cacheable (2026-10-15)
+
+Only prompt blocks are registered in the prefix cache, and only after their K/V is computed. Blocks filled during decode are never hashed, so generated text is not reused. This differs from vLLM, which caches decode blocks too. That helps multi-turn chat, where the next turn's prompt contains the previous turn's output. Revisit this when the benchmark has a multi-turn workload.
+
+## Known issue: admission thrash (2026-10-15)
+
+Engine preemptions do not fall as the KV pool grows as quickly as they should. Admission lets a waiting request in whenever its prompt fits, but running sequences still need blocks for decode, so the pool is drained again and the newest sequence is preempted and recomputed. The sweep `run_preemption_sweep` and its figure `preemptions_vs_pool.png` record the effect. Not fixed on purpose. The known mitigation is vLLM V0's watermark: reserve a fraction of the blocks before admitting a new request, so running sequences have room to grow.

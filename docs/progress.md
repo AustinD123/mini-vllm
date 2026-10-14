@@ -34,10 +34,11 @@ Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 
 Status values: todo · scaffolded · in progress · tests pass · reviewed (checkpoint answered)
 
-## Engine and cache state (2026-10-14)
+## Engine and cache state (2026-10-15)
 
-- Suite: 320 passed before the prefix-cache review, plus the new sweep and benchmark tests (see the commit that adds them). Cached-fuzz tests run 10k steps each (three seed and pool pairs), about two minutes.
-- Prefix caching: a block's hash becomes a lookup entry only after its K/V is computed (`PrefixCache.mark_computed`). Requests admitted in the same step cannot share blocks. The shared-prefix benchmark uses Poisson arrivals so sharing is measurable.
-- Open, from the re-review: decode blocks are never registered, so generated text is not cacheable. `add_request` validates capacity only at release, not at call time. `invariants.check` does not verify pending entries or that the hash maps are inverses.
-- Real model (Qwen2.5-0.5B-Instruct): P23 real-model test passes. fp16 agreement is 99.4% teacher-forced; fp32 agrees on every position.
+- Suite: 348 passed, 2 skipped (the env-gated real-model P23 test and the no-CUDA error-path test). The 10k-step cached fuzz is marked `slow`: `pytest -m "not slow"` skips it.
+- All six re-review findings are fixed. Each is logged in `docs/fix-log.md` with its regression test.
+- Prefix caching: a block's hash becomes a lookup entry only after its K/V is computed. Requests admitted in the same step cannot share blocks. On the 3050, prompt tokens forwarded fall by exactly the cached count (2,043 to 571). See `docs/fix-log.md` #9.
+- KV metrics are split: "in use" (blocks held by running sequences) and "pool occupancy" (non-free, including the retained LRU). Plots use in use.
+- Open: decode blocks are non-cacheable (differs from vLLM, see design log). Admission thrash: preemptions do not fall as the pool grows; the known mitigation is vLLM V0's watermark (design log).
 - Colab: `colab/mini_vllm_gpu_checks.ipynb` runs end to end locally in dry-run mode. The T4 run is not yet done.
