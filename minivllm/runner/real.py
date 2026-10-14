@@ -42,9 +42,10 @@ class RealRunner:
             first = seq.context_len - seq.length
             positions.extend(range(first, seq.context_len))
             slots.extend(slot_mapping(seq.block_table, first, seq.context_len, block_size))
-        ctx = StepContext(pool=self.pool, slots=torch.tensor(slots, dtype=torch.long), seqs=seqs)
-        input_ids = torch.tensor([token_ids], dtype=torch.long)
-        position_ids = torch.tensor([positions], dtype=torch.long)
+        device = self.pool.k.device
+        ctx = StepContext(pool=self.pool, slots=torch.tensor(slots, dtype=torch.long, device=device), seqs=seqs)
+        input_ids = torch.tensor([token_ids], dtype=torch.long, device=device)
+        position_ids = torch.tensor([positions], dtype=torch.long, device=device)
         with torch.no_grad():
             outputs = self.model(input_ids=input_ids, position_ids=position_ids, use_cache=False, kv_context=ctx)
         return outputs.logits[0]

@@ -59,10 +59,12 @@ class KVPool:
         block_size: int,
         num_kv_heads: int,
         head_dim: int,
+        dtype: torch.dtype = torch.float32,
+        device: torch.device | str = "cpu",
     ) -> None:
-        """Allocate k and v once, filled with zeros."""
-        self.k = torch.zeros(num_layers, num_blocks, block_size, num_kv_heads, head_dim)
-        self.v = torch.zeros(num_layers, num_blocks, block_size, num_kv_heads, head_dim)
+        """Allocate k and v once, filled with zeros, on ``device``."""
+        self.k = torch.zeros(num_layers, num_blocks, block_size, num_kv_heads, head_dim, dtype=dtype, device=device)
+        self.v = torch.zeros(num_layers, num_blocks, block_size, num_kv_heads, head_dim, dtype=dtype, device=device)
         
 
     def write(self, layer: int, slots: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> None:

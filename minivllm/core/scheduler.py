@@ -77,6 +77,7 @@ from collections import deque
 
 from minivllm.core.block_pool import BlockPool
 from minivllm.core.block_table import BlockTable
+from minivllm.core.prefix_cache import PrefixCache
 from minivllm.core.scheduler_output import SchedulerOutput
 from minivllm.core.sequence import SeqStatus, Sequence
 
@@ -84,7 +85,14 @@ from minivllm.core.sequence import SeqStatus, Sequence
 class Scheduler:
     """Continuous batching scheduler. See the module docstring for the contract."""
 
-    def __init__(self, pool: BlockPool, block_size: int, max_batch: int, token_budget: int) -> None:
+    def __init__(
+        self,
+        pool: BlockPool,
+        block_size: int,
+        max_batch: int,
+        token_budget: int,
+        prefix_cache: PrefixCache | None = None,
+    ) -> None:
         """Create a scheduler over ``pool``. Raises ValueError when max_batch < 1."""
         if max_batch < 1:
             raise ValueError("max_batch must be at least 1")
@@ -92,6 +100,10 @@ class Scheduler:
         self.block_size = block_size
         self.max_batch = max_batch
         self.token_budget = token_budget
+        self.prefix_cache = prefix_cache
+        self.cached_tokens = 0
+        # Cached prompt tokens at each sequence's most recent admission.
+        self.cached_by_seq: dict[int, int] = {}
         self.waiting: deque[Sequence] = deque()
         self.running: list[Sequence] = []
         self.tables: dict[int, BlockTable] = {}
@@ -108,6 +120,10 @@ class Scheduler:
         """Admit waiting sequences in FCFS order while a slot and room for the prompt exist."""
         while len(self.running) < self.max_batch and self.waiting:
             seq = self.waiting[0]
+            if self.prefix_cache is not None:
+                if not self._admit_cached(seq):
+                    break
+                continue
             table = self.tables[seq.seq_id]
             if not table.can_append(seq.num_uncomputed()):
                 break
@@ -116,10 +132,37 @@ class Scheduler:
             self.running.append(seq)
             seq.set_status(SeqStatus.RUNNING)
 
+    def _admit_cached(self, seq: Sequence) -> bool:
+        """Admit the head of the waiting queue through the PrefixCache (step 1, human-written).
+
+        Called from _admit in place of the BlockTable path when prefix_cache is set.
+        Returns False when the request does not fit; _admit then stops (strict FCFS).
+        Returns True after the sequence is admitted. Admission must:
+            - ask prefix_cache.admit(seq.seq_id, prompt tokens) for the cached prefix
+            - record cached_by_seq[seq.seq_id] and add it to cached_tokens
+            - pop the sequence from waiting, append it to running, set it RUNNING
+        The sequence's BlockTable must end up holding the same block ids the
+        cache handed out, because the engine reads slots from the table.
+        """
+        if not self.prefix_cache.admit(seq.seq_id, self.tokens[seq.seq_id][:seq.prompt_len]):
+            return False
+        self.cached_by_seq[seq.seq_id] = True
+        self.cached_tokens += seq.prompt_len
+        self.waiting.popleft()
+        self.running.append(seq)
+        seq.set_status(SeqStatus.RUNNING)
+        return True
+
+    def _free_blocks(self, seq_id: int) -> None:
+        """Release a sequence's blocks. Without a prefix cache, this frees its table (step 1, human-written with caching on)."""
+        if self.prefix_cache is not None:
+            raise NotImplementedError("step 1: release through self.prefix_cache.free")
+        self.tables[seq_id].free_all()
+
     def _preempt(self, victim: Sequence) -> None:
         """Free the victim's blocks and put it at the front of the waiting queue."""
         self.running.remove(victim)
-        self.tables[victim.seq_id].free_all()
+        self._free_blocks(victim.seq_id)
         victim.preempt_recompute()
         self.waiting.appendleft(victim)
 
@@ -163,7 +206,8 @@ class Scheduler:
                 still_running.append(seq)
         self.running = still_running
         for seq in finished_sequences:
-            self.tables.pop(seq.seq_id).free_all()
+            self._free_blocks(seq.seq_id)
+            self.tables.pop(seq.seq_id)
         return finished_sequences
 
 
