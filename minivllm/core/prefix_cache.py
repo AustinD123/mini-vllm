@@ -51,6 +51,7 @@ Tests
 from __future__ import annotations
 
 import hashlib
+from collections import OrderedDict
 
 from minivllm.core.block_pool import BlockPool, NoFreeBlocks
 
@@ -150,7 +151,10 @@ class PrefixCache:
         self.block_to_hash: dict[int, int] = {}
         self.block_refs: dict[int, int] = {}
         self.seq_blocks: dict[int, list[int]] = {}
-        self.lru: dict[int, None] = {}
+        # Hashes of blocks admitted but not yet computed: (block index, block id, hash) per sequence.
+        # They become lookup entries only in mark_computed, so no sequence can hit KV that was never written.
+        self.pending: dict[int, list[tuple[int, int, int]]] = {}
+        self.lru: OrderedDict[int, None] = OrderedDict()
 
     def _take_block(self) -> int:
         """A truly free block if there is one, otherwise the least recently used cached block."""
@@ -184,16 +188,38 @@ class PrefixCache:
             block = self._take_block()
             self.block_refs[block] = 1
             blocks.append(block)
-            if i < len(hashes) and hashes[i] not in self.hash_to_block:
-                self.hash_to_block[hashes[i]] = block
-                self.block_to_hash[block] = hashes[i]
+            if i < len(hashes):
+                self.pending.setdefault(seq_id, []).append((i, block, hashes[i]))
         self.seq_blocks[seq_id] = blocks
         return hits * self.block_size
+
+    def mark_computed(self, seq_id: int, computed_tokens: int) -> None:
+        """Register the hashes of ``seq_id``'s blocks whose tokens are all computed.
+
+        Block i is complete once (i + 1) * block_size <= computed_tokens. A hash already
+        registered by another block is left alone (the first copy wins).
+        """
+        if seq_id not in self.seq_blocks:
+            raise KeyError(seq_id)
+        still_pending = []
+        for index, block, block_hash in self.pending.get(seq_id, []):
+            if (index + 1) * self.block_size > computed_tokens:
+                still_pending.append((index, block, block_hash))
+            elif block_hash not in self.hash_to_block:
+                self.hash_to_block[block_hash] = block
+                self.block_to_hash[block] = block_hash
+        if still_pending:
+            self.pending[seq_id] = still_pending
+        else:
+            self.pending.pop(seq_id, None)
 
     def free(self, seq_id: int) -> None:
         """Release ``seq_id``'s blocks. Raises KeyError if it was never admitted."""
         blocks = self.seq_blocks.pop(seq_id)
-        for block in blocks:
+        self.pending.pop(seq_id, None)  # never-computed blocks must not stay findable
+        # Tail first: the root of a chain is the most recently freed, so it is evicted last.
+        # A hit needs an unbroken chain from the root, so the root is the block worth keeping.
+        for block in reversed(blocks):
             self.block_refs[block] -= 1
             if self.block_refs[block] == 0:
                 del self.block_refs[block]
@@ -248,7 +274,6 @@ class PrefixCache:
             oldest cached block being evicted first, and an evicted hash no
             longer being a hit.
         """
-        block = next(iter(self.lru))
-        del self.lru[block]
+        block, _ = self.lru.popitem(last=False)
         del self.hash_to_block[self.block_to_hash.pop(block)]
         return block

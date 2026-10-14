@@ -75,7 +75,7 @@ from __future__ import annotations
 
 from collections import deque
 
-from minivllm.core.block_pool import BlockPool
+from minivllm.core.block_pool import BlockPool, NoFreeBlocks
 from minivllm.core.block_table import BlockTable
 from minivllm.core.prefix_cache import PrefixCache
 from minivllm.core.scheduler_output import SchedulerOutput
@@ -92,8 +92,14 @@ class Scheduler:
         max_batch: int,
         token_budget: int,
         prefix_cache: PrefixCache | None = None,
+        tokens: dict[int, list[int]] | None = None,
     ) -> None:
-        """Create a scheduler over ``pool``. Raises ValueError when max_batch < 1."""
+        """Create a scheduler over ``pool``. Raises ValueError when max_batch < 1.
+
+        tokens maps seq_id to every token the sequence has so far (prompt, then outputs).
+        The prefix cache reads it at admission. The engine passes its own dict, so outputs
+        appended by the engine are visible here.
+        """
         if max_batch < 1:
             raise ValueError("max_batch must be at least 1")
         self.pool = pool
@@ -101,6 +107,7 @@ class Scheduler:
         self.max_batch = max_batch
         self.token_budget = token_budget
         self.prefix_cache = prefix_cache
+        self.tokens: dict[int, list[int]] = tokens if tokens is not None else {}
         self.cached_tokens = 0
         # Cached prompt tokens at each sequence's most recent admission.
         self.cached_by_seq: dict[int, int] = {}
@@ -133,30 +140,43 @@ class Scheduler:
             seq.set_status(SeqStatus.RUNNING)
 
     def _admit_cached(self, seq: Sequence) -> bool:
-        """Admit the head of the waiting queue through the PrefixCache (step 1, human-written).
+        """Admit the head of the waiting queue through the PrefixCache.
 
-        Called from _admit in place of the BlockTable path when prefix_cache is set.
-        Returns False when the request does not fit; _admit then stops (strict FCFS).
-        Returns True after the sequence is admitted. Admission must:
-            - ask prefix_cache.admit(seq.seq_id, prompt tokens) for the cached prefix
-            - record cached_by_seq[seq.seq_id] and add it to cached_tokens
-            - pop the sequence from waiting, append it to running, set it RUNNING
-        The sequence's BlockTable must end up holding the same block ids the
-        cache handed out, because the engine reads slots from the table.
+        Returns False when the cache cannot cover the sequence (strict FCFS: _admit stops).
+        On success the cached tokens count as computed, and the table holds the cache's blocks.
+        The cache covers every token the sequence has so far, so a preempted sequence that
+        already produced outputs re-admits with those outputs included.
         """
-        if not self.prefix_cache.admit(seq.seq_id, self.tokens[seq.seq_id][:seq.prompt_len]):
+        known = self.tokens[seq.seq_id][:seq.prompt_len + seq.output_len]
+        try:
+            hits = self.prefix_cache.admit(seq.seq_id, known)
+        except NoFreeBlocks:
             return False
-        self.cached_by_seq[seq.seq_id] = True
-        self.cached_tokens += seq.prompt_len
+        self.tables[seq.seq_id].adopt(self.prefix_cache.seq_blocks[seq.seq_id], len(known))
+        seq.on_tokens_computed(hits, sampled=False)
+        self.cached_by_seq[seq.seq_id] = hits
+        self.cached_tokens += hits
         self.waiting.popleft()
         self.running.append(seq)
         seq.set_status(SeqStatus.RUNNING)
         return True
 
     def _free_blocks(self, seq_id: int) -> None:
-        """Release a sequence's blocks. Without a prefix cache, this frees its table (step 1, human-written with caching on)."""
+        """Release a sequence's blocks.
+
+        With a prefix cache, the cache drops this sequence's references to shared blocks.
+        Blocks the table holds beyond the cache's (decode blocks, private to this sequence)
+        go straight back to the pool. The table then forgets everything.
+        """
         if self.prefix_cache is not None:
-            raise NotImplementedError("step 1: release through self.prefix_cache.free")
+            cached = set(self.prefix_cache.seq_blocks[seq_id])
+            self.prefix_cache.free(seq_id)
+            table = self.tables[seq_id]
+            for block_id in table.block_ids:
+                if block_id not in cached:
+                    self.pool.free(block_id)
+            table.forget()
+            return
         self.tables[seq_id].free_all()
 
     def _preempt(self, victim: Sequence) -> None:
@@ -199,6 +219,8 @@ class Scheduler:
         for seq in self.running:
             if seq.seq_id in output.num_tokens:
                 seq.on_tokens_computed(output.num_tokens[seq.seq_id], seq.seq_id in sampled)
+                if self.prefix_cache is not None:
+                    self.prefix_cache.mark_computed(seq.seq_id, seq.num_computed_tokens)
             if seq.is_finished():
                 seq.set_status(SeqStatus.FINISHED)
                 finished_sequences.append(seq)

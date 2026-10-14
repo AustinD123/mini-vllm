@@ -26,6 +26,8 @@ How one step works
 
 from __future__ import annotations
 
+import heapq
+import itertools
 import math
 
 import torch
@@ -79,15 +81,18 @@ class Engine:
         dtype = param.dtype if dtype is None else dtype
         self.block_size = block_size
         self.clock: Clock = clock if clock is not None else FakeClock()
-        # Requests whose arrival_time is still in the future. The scheduler never sees them.
-        self.pending: list[Sequence] = []
+        # Requests not yet handed to the scheduler, as a heap of (arrival_time, order, seq).
+        self.pending: list[tuple[float, int, Sequence]] = []
+        self._arrival_order = itertools.count()
         self.block_pool = BlockPool(num_blocks)
         self.kv = KVPool(num_layers, num_blocks, block_size, num_kv_heads, head_dim, dtype=dtype, device=param.device)
         self.runner = RealRunner(model, self.kv)
         cache = PrefixCache(self.block_pool, block_size) if prefix_cache else None
-        self.scheduler = Scheduler(self.block_pool, block_size, max_batch, token_budget, prefix_cache=cache)
         self.seqs: dict[int, Sequence] = {}
         self.tokens: dict[int, list[int]] = {}
+        self.scheduler = Scheduler(
+            self.block_pool, block_size, max_batch, token_budget, prefix_cache=cache, tokens=self.tokens
+        )
         self.logs: dict[int, RequestLog] = {}
         self.num_preemptions = 0
         self.preempted_seq_ids: list[int] = []
@@ -99,35 +104,28 @@ class Engine:
         return self.scheduler.cached_tokens
 
     def add_request(self, seq_id: int, prompt_ids: list[int], max_new_tokens: int, arrival_time: float = 0.0) -> None:
-        """Queue one request. Its tokens start as the prompt. It is held back until arrival_time."""
+        """Queue one request. Its tokens start as the prompt. It joins the scheduler at arrival_time."""
         seq = Sequence(
             seq_id=seq_id, prompt_len=len(prompt_ids), max_new_tokens=max_new_tokens, arrival_time=arrival_time
         )
         self.seqs[seq_id] = seq
         self.tokens[seq_id] = list(prompt_ids)
         self.logs[seq_id] = RequestLog(seq_id, arrival_time, math.nan, [], math.nan)
-        if arrival_time <= self.clock.now():
-            self.scheduler.add_request(seq)
-        else:
-            self.pending.append(seq)
+        heapq.heappush(self.pending, (arrival_time, next(self._arrival_order), seq))
 
     def _release_arrived(self) -> None:
-        """Hand every pending request whose arrival_time has passed to the scheduler (step 2, human-written).
+        """Hand every request whose arrival_time has passed to the scheduler, in arrival order.
 
-        Called at the top of step() whenever something is pending. Contract:
-            - move each pending sequence with arrival_time <= clock.now() into the
-              scheduler (scheduler.add_request), in arrival order, and drop it from pending
-            - when nothing is waiting or running and pending is not empty, advance the
-              clock to the earliest pending arrival first (clock.advance_to), so an idle
-              engine jumps to the next arrival instead of spinning
-            - never schedule a request before its arrival_time
+        When nothing is waiting or running, the clock first jumps to the earliest pending
+        arrival, so an idle engine goes straight to the next request instead of spinning.
+        The jump and the release happen in the same call, so no step is wasted.
         """
-        while self.pending and self.pending[0].arrival_time <= self.clock.now():
-            seq = self.pending.pop(0)
-            self.scheduler.add_request(seq)
         if self.pending and not (self.scheduler.waiting or self.scheduler.running):
-            self.clock.advance_to(self.pending[0].arrival_time)
-        
+            self.clock.advance_to(self.pending[0][0])
+        now = self.clock.now()
+        while self.pending and self.pending[0][0] <= now:
+            _, _, seq = heapq.heappop(self.pending)
+            self.scheduler.add_request(seq)
 
     def has_work(self) -> bool:
         return bool(self.pending or self.scheduler.waiting or self.scheduler.running)

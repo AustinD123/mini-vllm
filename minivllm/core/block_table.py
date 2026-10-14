@@ -199,6 +199,27 @@ class BlockTable:
         self._blocks.clear()
         self._num_tokens = 0
 
+    def adopt(self, block_ids: list[int], num_tokens: int) -> None:
+        """Take blocks that someone else already allocated (the prefix cache), holding num_tokens tokens.
+
+        The pool is not touched: the owner releases the blocks. The table must be empty, and
+        block_ids must be exactly the blocks num_tokens tokens need. Raises ValueError otherwise.
+        """
+        if self._blocks or self._num_tokens:
+            raise ValueError("adopt needs an empty table")
+        if num_tokens < 0 or len(block_ids) != (num_tokens + self.block_size - 1) // self.block_size:
+            raise ValueError(f"{len(block_ids)} blocks cannot hold {num_tokens} tokens")
+        self._blocks = list(block_ids)
+        self._num_tokens = num_tokens
+
+    def forget(self) -> None:
+        """Drop every block reference without returning anything to the pool.
+
+        For a table whose blocks are owned by someone else (the prefix cache releases them).
+        """
+        self._blocks.clear()
+        self._num_tokens = 0
+
 
     @property
     def block_ids(self) -> list[int]:

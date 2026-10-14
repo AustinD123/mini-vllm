@@ -57,33 +57,73 @@ from minivllm.core.sequence import SeqStatus
 
 
 def check(scheduler: Scheduler) -> None:
-    """Assert every scheduler invariant. Raises AssertionError when one is broken."""
+    """Assert every scheduler invariant. Raises AssertionError when one is broken.
+
+    With a prefix cache, a block may be held by several sequences, but only through the
+    cache: each holder's table has it, the cache lists it for that holder, and its refcount
+    counts the holders. A cached block with no holders sits in the LRU and is hashed.
+    """
     if not isinstance(scheduler, Scheduler):
         raise TypeError("scheduler must be a Scheduler instance")
+    cache = scheduler.prefix_cache
+    running_ids = {seq.seq_id for seq in scheduler.running}
+    waiting_ids = {seq.seq_id for seq in scheduler.waiting}
     all_sequences = list(scheduler.running) + list(scheduler.waiting)
-    if scheduler.pool.num_free + sum(len(table.block_ids) for table in scheduler.tables.values()) != scheduler.pool.num_blocks:
+
+    table_blocks = {sid: list(table.block_ids) for sid, table in scheduler.tables.items()}
+    for sid, ids in table_blocks.items():
+        if len(set(ids)) != len(ids):
+            raise AssertionError(f"Invariant 2 failed: sequence {sid}'s table lists a block twice")
+    cache_blocks = {sid: list(blocks) for sid, blocks in cache.seq_blocks.items()} if cache else {}
+    lru = set(cache.lru) if cache else set()
+
+    # Invariant 2: who holds each block. Shared blocks must be held through the cache, by every holder.
+    table_holders: dict[int, set[int]] = {}
+    for sid, ids in table_blocks.items():
+        for block_id in ids:
+            table_holders.setdefault(block_id, set()).add(sid)
+    cache_holders: dict[int, set[int]] = {}
+    for sid, ids in cache_blocks.items():
+        for block_id in ids:
+            cache_holders.setdefault(block_id, set()).add(sid)
+    for sid, ids in cache_blocks.items():
+        if not set(ids) <= set(table_blocks.get(sid, [])):
+            raise AssertionError(f"Invariant 2 failed: the cache lists blocks sequence {sid}'s table does not hold")
+    for block_id, holders in table_holders.items():
+        if len(holders) > 1 and holders != cache_holders.get(block_id, set()):
+            raise AssertionError(f"Invariant 2 failed: block {block_id} is owned twice")
+    for block_id, holders in cache_holders.items():
+        if cache.block_refs.get(block_id) != len(holders):
+            raise AssertionError(f"Invariant 2 failed: block {block_id}'s refcount does not match its holders")
+    for block_id in lru:
+        if block_id in table_holders or block_id in cache_holders:
+            raise AssertionError(f"Invariant 2 failed: block {block_id} is in the LRU but still in use")
+        if block_id not in cache.block_to_hash:
+            raise AssertionError(f"Invariant 2 failed: LRU block {block_id} has no hash")
+
+    # Invariant 1: every block is free, or owned exactly once by the tables, the cache, or the LRU.
+    owned = set(table_holders) | set(cache_holders) | lru
+    if scheduler.pool.num_free + len(owned) != scheduler.pool.num_blocks:
         raise AssertionError("Invariant 1 failed: blocks do not add up")
-    all_owned_blocks = set()
-    for table in scheduler.tables.values():
-        for block_id in table.block_ids:
-            if block_id in all_owned_blocks:
-                raise AssertionError(f"Invariant 2 failed: block {block_id} is owned twice")
-            all_owned_blocks.add(block_id)
-    if not all_owned_blocks.isdisjoint(scheduler.pool.free_block_ids):
+    if not owned.isdisjoint(scheduler.pool.free_block_ids):
         raise AssertionError("Invariant 2 failed: a block is both free and owned")
+
+    # Invariant 3: a running sequence has room for what it has computed.
     for sequence in all_sequences:
         if sequence.status == SeqStatus.RUNNING and sequence.num_computed_tokens > scheduler.tables[sequence.seq_id].num_tokens:
             raise AssertionError(f"Invariant 3 failed: sequence {sequence.seq_id} has computed more tokens than its table covers")
-    waiting_ids = {seq.seq_id for seq in scheduler.waiting}
-    running_ids = {seq.seq_id for seq in scheduler.running}
+
+    # Invariant 4: the queues are disjoint, and only running sequences hold blocks.
     for sequence in scheduler.waiting:
         if scheduler.tables[sequence.seq_id].block_ids:
             raise AssertionError(f"Invariant 4 failed: waiting sequence {sequence.seq_id} still holds blocks")
     if waiting_ids & running_ids:
         raise AssertionError("Invariant 4 failed: a sequence is both waiting and running")
+    for sid in cache_blocks:
+        if sid not in running_ids:
+            raise AssertionError(f"Invariant 4 failed: the cache holds blocks for sequence {sid}, which is not running")
     for sequence in all_sequences:
         if sequence.status in (SeqStatus.WAITING, SeqStatus.PREEMPTED) and sequence.seq_id not in waiting_ids:
             raise AssertionError(f"Invariant 4 failed: sequence {sequence.seq_id} is {sequence.status} but not in waiting")
         if sequence.status == SeqStatus.RUNNING and sequence.seq_id not in running_ids:
-            raise AssertionError(f"Invariant 4 failed: sequence {sequence.seq_id} is RUNNING but not in running")   
-        
+            raise AssertionError(f"Invariant 4 failed: sequence {sequence.seq_id} is RUNNING but not in running")
