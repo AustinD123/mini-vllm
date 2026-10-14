@@ -36,3 +36,7 @@ Checkpoint answer: TODO (human to fill)
 - **Eviction is not O(1) in the worst case.** `_evict_least_recent` uses `next(iter(self.lru))` on a plain dict. Deleted entries stay at the front of the dict until it resizes, so repeated front evictions get slower as the cache grows. Measured: 5,000 evictions from 10,000 entries took 6 ms, and 50,000 evictions from 100,000 entries took 579 ms (about 10× per eviction for 10× the size). Open: pick a structure that removes the oldest entry in O(1).
 - **A miss stops the hit search.** Blocks after an evicted block are recomputed even if they are still cached, because their KV depends on the evicted block.
 - **Cached blocks break the P13 checker's invariant 1** once the scheduler uses the cache, since a refcount-zero cached block is neither free nor owned. Add the LRU to that count before the two are combined.
+
+## Finding: repetition_penalty in HF generate under greedy decoding (2026-10-14)
+
+## Decision: hash after compute, and the same-step sharing consequence (2026-10-14)
