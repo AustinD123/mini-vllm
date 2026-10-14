@@ -96,6 +96,10 @@ class Engine:
         self.logs: dict[int, RequestLog] = {}
         self.num_preemptions = 0
         self.preempted_seq_ids: list[int] = []
+        # KV use, in blocks. In use: held by running sequences. Occupancy: everything not free,
+        # including cached blocks that no running sequence holds (the retained LRU).
+        self.peak_in_use_blocks = 0
+        self.peak_occupancy_blocks = 0
         self.max_step_tokens = 0
 
     @property
@@ -104,7 +108,23 @@ class Engine:
         return self.scheduler.cached_tokens
 
     def add_request(self, seq_id: int, prompt_ids: list[int], max_new_tokens: int, arrival_time: float = 0.0) -> None:
-        """Queue one request. Its tokens start as the prompt. It joins the scheduler at arrival_time."""
+        """Queue one request. Its tokens start as the prompt. It joins the scheduler at arrival_time.
+
+        Raises ValueError, before any state changes, when the request is empty, asks for no
+        output, cannot fit in the KV pool, or has a non-finite arrival time. A request whose
+        arrival has already passed is handed to the scheduler before this call returns.
+        """
+        if not prompt_ids:
+            raise ValueError("a request needs at least one prompt token")
+        if max_new_tokens < 1:
+            raise ValueError(f"max_new_tokens must be at least 1, got {max_new_tokens}")
+        capacity = self.block_pool.num_blocks * self.block_size
+        if len(prompt_ids) + max_new_tokens > capacity:
+            raise ValueError(
+                f"request {seq_id} needs {len(prompt_ids) + max_new_tokens} tokens; the pool holds {capacity}"
+            )
+        if not math.isfinite(arrival_time):
+            raise ValueError(f"arrival_time must be finite, got {arrival_time}")
         seq = Sequence(
             seq_id=seq_id, prompt_len=len(prompt_ids), max_new_tokens=max_new_tokens, arrival_time=arrival_time
         )
@@ -112,20 +132,23 @@ class Engine:
         self.tokens[seq_id] = list(prompt_ids)
         self.logs[seq_id] = RequestLog(seq_id, arrival_time, math.nan, [], math.nan)
         heapq.heappush(self.pending, (arrival_time, next(self._arrival_order), seq))
+        self._release_due()
 
-    def _release_arrived(self) -> None:
-        """Hand every request whose arrival_time has passed to the scheduler, in arrival order.
-
-        When nothing is waiting or running, the clock first jumps to the earliest pending
-        arrival, so an idle engine goes straight to the next request instead of spinning.
-        The jump and the release happen in the same call, so no step is wasted.
-        """
-        if self.pending and not (self.scheduler.waiting or self.scheduler.running):
-            self.clock.advance_to(self.pending[0][0])
+    def _release_due(self) -> None:
+        """Hand every pending request whose arrival has passed to the scheduler, in arrival order."""
         now = self.clock.now()
         while self.pending and self.pending[0][0] <= now:
             _, _, seq = heapq.heappop(self.pending)
             self.scheduler.add_request(seq)
+
+    def _release_arrived(self) -> None:
+        """Release due requests. When nothing is waiting or running, first jump the clock to the next arrival.
+
+        The jump and the release happen in the same call, so an idle gap costs no extra step.
+        """
+        if self.pending and not (self.scheduler.waiting or self.scheduler.running):
+            self.clock.advance_to(self.pending[0][0])
+        self._release_due()
 
     def has_work(self) -> bool:
         return bool(self.pending or self.scheduler.waiting or self.scheduler.running)
@@ -178,6 +201,9 @@ class Engine:
             self.logs[seq_id].token_times.append(step_end)
         for seq in finished:
             self.logs[seq.seq_id].finish_time = step_end
+        in_use = set().union(*(table.block_ids for table in self.scheduler.tables.values()))
+        self.peak_in_use_blocks = max(self.peak_in_use_blocks, len(in_use))
+        self.peak_occupancy_blocks = max(self.peak_occupancy_blocks, self.block_pool.num_blocks - self.block_pool.num_free)
         return [seq.seq_id for seq in finished]
 
     def request_logs(self) -> list[RequestLog]:

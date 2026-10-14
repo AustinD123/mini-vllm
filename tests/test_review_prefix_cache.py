@@ -78,6 +78,7 @@ def run_cached_fuzz(seed: int, steps: int, num_blocks: int, arrival_steps: int) 
 
 # review #8 (fixed): the 10k-step fuzz with prefix caching on. Every step passes the checker, and the run drains.
 # Pool sizes are small enough to force preemption; the workload shares a 32-token prefix and arrives over time.
+@pytest.mark.slow
 @pytest.mark.parametrize("seed, num_blocks", [(1, 6), (2, 12), (3, 40)])
 def test_cached_fuzz_holds_invariants_for_10k_steps(seed, num_blocks):
     finished = run_cached_fuzz(seed=seed, steps=10_000, num_blocks=num_blocks, arrival_steps=6_000)

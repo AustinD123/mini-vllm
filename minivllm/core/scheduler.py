@@ -152,8 +152,14 @@ class Scheduler:
             hits = self.prefix_cache.admit(seq.seq_id, known)
         except NoFreeBlocks:
             return False
-        self.tables[seq.seq_id].adopt(self.prefix_cache.seq_blocks[seq.seq_id], len(known))
-        seq.on_tokens_computed(hits, sampled=False)
+        try:
+            self.tables[seq.seq_id].adopt(self.prefix_cache.seq_blocks[seq.seq_id], len(known))
+            seq.on_tokens_computed(hits, sampled=False)
+        except Exception:
+            # Roll back the cache admit, so a failed admission leaves no blocks or hashes behind.
+            self.prefix_cache.free(seq.seq_id)
+            self.tables[seq.seq_id].forget()
+            raise
         self.cached_by_seq[seq.seq_id] = hits
         self.cached_tokens += hits
         self.waiting.popleft()
@@ -414,7 +420,7 @@ def choose_victim(running: list[Sequence]) -> Sequence:
             returns the most recently arrived sequence in ``running``
 
     Choices (the spec leaves these open)
-        "Newest" means the largest arrival_time. Ties are not expected.
+        "Newest" means the largest arrival_time. Ties break on seq_id: the larger id is the newer one.
         The scheduler, not this function, frees the victim's blocks, sets it
         to PREEMPTED, and puts it at the front of the waiting queue.
 
@@ -442,5 +448,5 @@ def choose_victim(running: list[Sequence]) -> Sequence:
     """
     if not running: 
         raise ValueError("No running sequences to choose from.")
-    return max(running, key=lambda seq: seq.arrival_time)
+    return max(running, key=lambda seq: (seq.arrival_time, seq.seq_id))
 

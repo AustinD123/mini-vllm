@@ -101,6 +101,26 @@ def check(scheduler: Scheduler) -> None:
         if block_id not in cache.block_to_hash:
             raise AssertionError(f"Invariant 2 failed: LRU block {block_id} has no hash")
 
+    if cache:
+        # Invariant 2 (hashes): the two hash maps are exact inverses.
+        for block_hash, block_id in cache.hash_to_block.items():
+            if cache.block_to_hash.get(block_id) != block_hash:
+                raise AssertionError(f"Invariant 2 failed: hash {block_hash} and block {block_id} disagree")
+        for block_id, block_hash in cache.block_to_hash.items():
+            if cache.hash_to_block.get(block_hash) != block_id:
+                raise AssertionError(f"Invariant 2 failed: block {block_id} and hash {block_hash} disagree")
+        # Pending hashes (admitted, not yet computed) belong to running sequences, to blocks those
+        # sequences hold, and to blocks that are not registered yet.
+        for sid, entries in cache.pending.items():
+            if sid not in running_ids:
+                raise AssertionError(f"Invariant 4 failed: pending hashes belong to sequence {sid}, which is not running")
+            held = set(cache.seq_blocks.get(sid, []))
+            for _, block_id, _ in entries:
+                if block_id not in held:
+                    raise AssertionError(f"Invariant 2 failed: pending block {block_id} is not held by sequence {sid}")
+                if block_id in cache.block_to_hash:
+                    raise AssertionError(f"Invariant 2 failed: pending block {block_id} is already registered")
+
     # Invariant 1: every block is free, or owned exactly once by the tables, the cache, or the LRU.
     owned = set(table_holders) | set(cache_holders) | lru
     if scheduler.pool.num_free + len(owned) != scheduler.pool.num_blocks:
