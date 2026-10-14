@@ -88,6 +88,8 @@ METRIC_KEYS = {f"{name}_{p}" for name in ("ttft", "tpot", "itl", "e2e") for p in
     "goodput",
     "output_tokens",
     "num_requests",
+    "cached_tokens",
+    "prefix_hit_rate",
 }
 
 

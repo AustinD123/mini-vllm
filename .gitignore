@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .claude/settings.local.json
+results/
+*.zip

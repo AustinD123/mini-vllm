@@ -9,16 +9,21 @@ Operations
         Runs every system in SYSTEMS at every rate and writes one JSON record per point to
         out_dir/<system>_rate<rate>.json. Returns the records in run order.
 
-    run_point(system, ref_model, paged_model, jobs, clock, ...) -> (outputs, logs)
+    run_point(system, ref_model, paged_model, jobs, clock, ...) -> (outputs, logs, cached_tokens)
         one system on one list of jobs. Each point gets a fresh clock from clock_factory.
+        cached_tokens is the prompt tokens served from the prefix cache (0 unless engine_prefix).
 
-Metrics per point come from bench.metrics.summarize, plus output_tokens and num_requests.
+Systems: sequential, static, engine (no prefix cache), engine_prefix (engine with PrefixCache).
+
+Metrics per point come from bench.metrics.summarize, plus output_tokens, num_requests,
+cached_tokens and prefix_hit_rate (cached prompt tokens over all prompt tokens).
 Output tokens are the same for every system at one rate, because ignore-EOS makes each
 request emit exactly output_len tokens.
 """
 
 from __future__ import annotations
 
+import gc
 from pathlib import Path
 from typing import Callable
 
@@ -34,7 +39,7 @@ from minivllm.clock import Clock, FakeClock
 from minivllm.engine import Engine
 from minivllm.runner.sizing import num_blocks_for_memory
 
-SYSTEMS = ("sequential", "static", "engine")
+SYSTEMS = ("sequential", "static", "engine", "engine_prefix")
 BLOCK_SIZE = 16
 
 
@@ -48,13 +53,15 @@ def run_point(
     max_batch: int,
     token_budget: int,
     num_blocks: int,
-) -> tuple[dict[int, list[int]], list[RequestLog]]:
+) -> tuple[dict[int, list[int]], list[RequestLog], int]:
     """Run one system over ``jobs``. Raises ValueError for an unknown system."""
     if system == "sequential":
-        return run_sequential(ref_model, jobs, clock)
+        outputs, logs = run_sequential(ref_model, jobs, clock)
+        return outputs, logs, 0
     if system == "static":
-        return run_static(ref_model, jobs, clock, max_batch=max_batch)
-    if system == "engine":
+        outputs, logs = run_static(ref_model, jobs, clock, max_batch=max_batch)
+        return outputs, logs, 0
+    if system in ("engine", "engine_prefix"):
         cfg = paged_model.config
         engine = Engine(
             paged_model,
@@ -67,11 +74,12 @@ def run_point(
             head_dim=cfg.hidden_size // cfg.num_attention_heads,
             dtype=next(paged_model.parameters()).dtype,
             clock=clock,
+            prefix_cache=system == "engine_prefix",
         )
         for job in jobs:
             engine.add_request(job.request_id, list(job.prompt_ids), job.output_len, arrival_time=job.arrival_time)
         outputs = engine.run()
-        return outputs, engine.request_logs()
+        return outputs, engine.request_logs(), engine.cached_tokens
     raise ValueError(f"unknown system {system!r}; expected one of {SYSTEMS}")
 
 
@@ -120,14 +128,21 @@ def run_sweep(
         jobs = build_jobs(requests, vocab_size=vocab_size, seed=seed)
         workload = {"rate": rate, "num_requests": num_requests, "num_blocks": num_blocks, **lengths}
         for system in systems:
-            outputs, logs = run_point(
+            outputs, logs, cached = run_point(
                 system, ref_model, paged_model, jobs, clock_factory(),
                 max_batch=max_batch, token_budget=token_budget, num_blocks=num_blocks,
             )
             metrics = summarize(logs)
+            prompt_tokens = sum(len(job.prompt_ids) for job in jobs)
             metrics["output_tokens"] = sum(len(tokens) for tokens in outputs.values())
             metrics["num_requests"] = len(outputs)
+            metrics["cached_tokens"] = cached
+            metrics["prefix_hit_rate"] = cached / prompt_tokens if prompt_tokens else 0.0
             record = make_result(system, workload, seed, metrics, kv_memory_fraction)
             write_result(out_dir / f"{system}_rate{rate:g}.json", record)
             records.append(record)
+            del outputs, logs  # release per-point state before the next engine is built
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
     return records

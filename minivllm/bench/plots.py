@@ -21,10 +21,15 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-import matplotlib.pyplot as plt
+import matplotlib
+
+matplotlib.use("Agg")  # figures are written to PNG files; no GUI backend is needed
+import matplotlib.pyplot as plt  # noqa: E402
 
 SYSTEM_ORDER = ("sequential", "static", "engine")
 SYSTEM_COLORS = {"sequential": "#2a78d6", "static": "#eb6834", "engine": "#1baf7a"}
+PREFIX_SYSTEMS = ("engine", "engine_prefix")
+PREFIX_COLORS = {"engine": "#2a78d6", "engine_prefix": "#1baf7a"}
 INK_PRIMARY = "#0b0b0b"
 INK_SECONDARY = "#52514e"
 GRID = "#e5e4e0"
@@ -90,4 +95,32 @@ def sweep_table(records: list[dict]) -> list[dict]:
                 "output_tokens": m["output_tokens"],
             }
         )
-    return sorted(rows, key=lambda row: (row["rate"], SYSTEM_ORDER.index(row["system"])))
+    order = {name: i for i, name in enumerate(SYSTEM_ORDER + ("engine_prefix",))}
+    return sorted(rows, key=lambda row: (row["rate"], order.get(row["system"], len(order))))
+
+
+def plot_prefix_sweep(records: list[dict], out_dir: str | Path) -> list[Path]:
+    """Engine vs engine with prefix caching, on a shared-prefix workload: throughput and TTFT p99."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for metric, label in (("throughput", "Output throughput (tokens/s)"), ("ttft_99", "TTFT p99 (s)")):
+        fig, ax = plt.subplots(figsize=(6.4, 4.2), facecolor="white")
+        for system in PREFIX_SYSTEMS:
+            xs, ys = _series(records, system, metric)
+            if xs:
+                ax.plot(xs, ys, color=PREFIX_COLORS[system], linewidth=2, marker="o", markersize=8, label=system)
+        ax.set_xlabel("Request rate (requests/s)", color=INK_SECONDARY)
+        ax.set_ylabel(label, color=INK_SECONDARY)
+        ax.set_title(f"Shared-prefix workload: {label}", color=INK_PRIMARY, loc="left", fontsize=11)
+        ax.grid(True, color=GRID, linewidth=0.8)
+        ax.set_axisbelow(True)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        ax.legend(frameon=False, loc="best", fontsize=9)
+        fig.tight_layout()
+        path = out_dir / f"prefix_{metric}.png"
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+        paths.append(path)
+    return paths
