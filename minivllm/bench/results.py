@@ -121,6 +121,9 @@ def validate_result(record: dict) -> None:
     missing = ENVIRONMENT_KEYS - record["environment"].keys()
     if missing:
         raise ValueError(f"environment is missing {sorted(missing)}")
+    for name, pair in record.get("spread", {}).items():
+        if len(pair) != 2 or pair[0] > pair[1]:
+            raise ValueError(f"spread for {name} must be [min, max], got {pair!r}")
     if metrics["finished"] != metrics["submitted"]:
         raise ValueError(f"{metrics['finished']} finished but {metrics['submitted']} submitted")
     for key in ("rejected", "oversized"):

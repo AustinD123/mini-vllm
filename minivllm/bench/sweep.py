@@ -166,13 +166,15 @@ def run_sweep(
     capacity = num_blocks * BLOCK_SIZE
     out_dir = Path(out_dir)
     lengths = {**LENGTH_DEFAULTS, **(length_overrides or {})}
+    clock_name = type(clock_factory()).__name__  # FakeClock: cost-model time; WallClock: real time
     records: list[dict] = []
     for rate in rates:
         requests = make_workload(rate=rate, num_requests=num_requests, seed=seed, **lengths)
         all_jobs = build_jobs(requests, vocab_size=vocab_size, seed=seed)
         jobs = [j for j in all_jobs if len(j.prompt_ids) + j.output_len <= capacity]
         oversized = len(all_jobs) - len(jobs)
-        workload = {"rate": rate, "num_requests": num_requests, "num_blocks": num_blocks, **lengths}
+        workload = {"rate": rate, "num_requests": num_requests, "num_blocks": num_blocks,
+                    "clock": clock_name, **lengths}
         for system in systems:
             point = run_point(
                 system, ref_model, paged_model, jobs, clock_factory(),
