@@ -104,7 +104,7 @@ def plot_prefix_sweep(records: list[dict], out_dir: str | Path) -> list[Path]:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
-    for metric, label in (("throughput", "Output throughput (tokens/s)"), ("ttft_99", "TTFT p99 (s)")):
+    for metric, label in (("throughput", "Output throughput (tokens/s)"), ("ttft_99", "TTFT p99 (s)"), ("kv_in_use_peak_fraction", "KV in use, peak (fraction of pool)")):
         fig, ax = plt.subplots(figsize=(6.4, 4.2), facecolor="white")
         for system in PREFIX_SYSTEMS:
             xs, ys = _series(records, system, metric)
@@ -124,3 +124,31 @@ def plot_prefix_sweep(records: list[dict], out_dir: str | Path) -> list[Path]:
         plt.close(fig)
         paths.append(path)
     return paths
+
+
+def plot_preemptions(records: list[dict], out_dir: str | Path) -> list[Path]:
+    """Engine preemptions against KV pool size (blocks), one line per engine system."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(6.4, 4.2), facecolor="white")
+    for system in PREFIX_SYSTEMS:
+        points = sorted(
+            (r["workload"]["num_blocks"], r["metrics"]["num_preemptions"])
+            for r in records if r["system"] == system and r["metrics"]["num_preemptions"] is not None
+        )
+        if points:
+            xs, ys = zip(*points)
+            ax.plot(xs, ys, color=PREFIX_COLORS[system], linewidth=2, marker="o", markersize=8, label=system)
+    ax.set_xlabel("KV pool size (blocks)", color=INK_SECONDARY)
+    ax.set_ylabel("Preemptions", color=INK_SECONDARY)
+    ax.set_title("Preemptions against pool size (admission thrash)", color=INK_PRIMARY, loc="left", fontsize=11)
+    ax.grid(True, color=GRID, linewidth=0.8)
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.legend(frameon=False, loc="best", fontsize=9)
+    fig.tight_layout()
+    path = out_dir / "preemptions_vs_pool.png"
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return [path]

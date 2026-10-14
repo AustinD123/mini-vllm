@@ -83,18 +83,29 @@ def write_result(path: str | Path, result: dict) -> None:
 
 RESULT_KEYS = {"system", "seed", "workload", "metrics", "environment", "kv_memory_fraction"}
 ENVIRONMENT_KEYS = {"gpu", "torch", "transformers", "python", "git_commit"}
-METRIC_KEYS = {f"{name}_{p}" for name in ("ttft", "tpot", "itl", "e2e") for p in (50, 90, 99)} | {
+COUNT_KEYS = {"submitted", "finished", "rejected", "oversized", "output_tokens", "num_requests", "cached_tokens"}
+METRIC_KEYS = {f"{name}_{p}" for name in ("ttft", "tpot", "itl", "e2e") for p in (50, 90, 99)} | COUNT_KEYS | {
     "throughput",
     "goodput",
-    "output_tokens",
-    "num_requests",
-    "cached_tokens",
     "prefix_hit_rate",
+    # None for the baselines (no engine, no KV pool)
+    "num_preemptions",
+    "kv_in_use_peak_blocks",
+    "kv_in_use_peak_fraction",
+    "kv_occupancy_peak_blocks",
+    "kv_occupancy_peak_fraction",
 }
+ENGINE_SYSTEMS = ("engine", "engine_prefix")
+KV_KEYS = {"kv_in_use_peak_blocks", "kv_in_use_peak_fraction", "kv_occupancy_peak_blocks", "kv_occupancy_peak_fraction"}
 
 
 def validate_result(record: dict) -> None:
-    """Raise ValueError when a result record is missing a required key. Extra keys are allowed."""
+    """Raise ValueError when a record is missing a key or breaks the sweep rules. Extra keys are allowed.
+
+    Rules: every submitted request finished; rejected and oversized are non-negative counts; for
+    engine systems the KV numbers are present, and in use <= occupancy <= the pool; for the
+    baselines they are None.
+    """
     missing = RESULT_KEYS - record.keys()
     if missing:
         raise ValueError(f"result is missing {sorted(missing)}")
@@ -103,9 +114,28 @@ def validate_result(record: dict) -> None:
     if not isinstance(record["seed"], int):
         raise ValueError("seed must be an int")
     _check_fraction(record["kv_memory_fraction"])
-    missing = METRIC_KEYS - record["metrics"].keys()
+    metrics = record["metrics"]
+    missing = METRIC_KEYS - metrics.keys()
     if missing:
         raise ValueError(f"metrics is missing {sorted(missing)}")
     missing = ENVIRONMENT_KEYS - record["environment"].keys()
     if missing:
         raise ValueError(f"environment is missing {sorted(missing)}")
+    if metrics["finished"] != metrics["submitted"]:
+        raise ValueError(f"{metrics['finished']} finished but {metrics['submitted']} submitted")
+    for key in ("rejected", "oversized"):
+        if isinstance(metrics[key], bool) or not isinstance(metrics[key], int) or metrics[key] < 0:
+            raise ValueError(f"{key} must be a non-negative int, got {metrics[key]!r}")
+    if record["system"] in ENGINE_SYSTEMS:
+        missing_kv = [k for k in KV_KEYS if metrics[k] is None]
+        if missing_kv:
+            raise ValueError(f"{record['system']} must report {sorted(missing_kv)}")
+        pool = record["workload"]["num_blocks"]
+        if not metrics["kv_in_use_peak_blocks"] <= metrics["kv_occupancy_peak_blocks"] <= pool:
+            raise ValueError("KV peaks must satisfy in use <= occupancy <= pool size")
+    else:
+        present = [k for k in KV_KEYS if metrics[k] is not None]
+        if present:
+            raise ValueError(f"{record['system']} has no KV pool, so {sorted(present)} must be None")
+
+
