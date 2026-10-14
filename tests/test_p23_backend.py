@@ -47,7 +47,10 @@ def hf_logits(ref: Qwen2ForCausalLM, tokens: list[int]) -> torch.Tensor:
 
 def hf_generate(ref: Qwen2ForCausalLM, prompt: list[int], n: int) -> list[int]:
     with torch.no_grad():
-        out = ref.generate(torch.tensor([prompt]), do_sample=False, max_new_tokens=n, eos_token_id=None, pad_token_id=0)
+        out = ref.generate(
+            torch.tensor([prompt]), do_sample=False, max_new_tokens=n, eos_token_id=None, pad_token_id=0,
+            repetition_penalty=1.0,  # instruct checkpoints set 1.1, which generate() applies even when greedy
+        )
     return out[0, len(prompt):].tolist()
 
 

@@ -11,6 +11,7 @@ def test_shared_prefix_uses_fewer_blocks_than_independent_sequences():
     pool = BlockPool(10)
     cache = PrefixCache(pool, BLOCK)
     cache.admit(0, SHARED + [100] * 5)
+    cache.mark_computed(0, 37)  # blocks are shareable once their prefill has run
     cache.admit(1, SHARED + [200] * 5)
     used = 10 - pool.num_free
     assert used == 4  # independent prompts would take 3 + 3 = 6
@@ -20,7 +21,9 @@ def test_freeing_one_sequence_leaves_shared_blocks_alive():
     pool = BlockPool(10)
     cache = PrefixCache(pool, BLOCK)
     cache.admit(0, SHARED + [100] * 5)
+    cache.mark_computed(0, 37)  # prefill ran
     cache.admit(1, SHARED + [200] * 5)
+    cache.mark_computed(1, 37)
     cache.free(0)
     assert 10 - pool.num_free == 3
     assert cache.admit(2, SHARED + [300] * 5) == 32
@@ -30,6 +33,7 @@ def test_fully_cached_prompt_recomputes_last_token():
     pool = BlockPool(10)
     cache = PrefixCache(pool, BLOCK)
     assert cache.admit(0, SHARED) == 0
+    cache.mark_computed(0, 32)
     assert cache.admit(1, SHARED) == 16
 
 

@@ -21,3 +21,14 @@ def test_sweep_table_is_sorted_by_rate_then_system():
     assert [(row["rate"], row["system"]) for row in rows] == [
         (2.0, "sequential"), (2.0, "engine"), (8.0, "sequential"), (8.0, "engine"),
     ]
+
+
+def test_prefix_sweep_plot_and_table_accept_engine_prefix(tmp_path):
+    from minivllm.bench.plots import plot_prefix_sweep
+
+    records = [fake_record(s, r) for s in ("engine", "engine_prefix") for r in (2.0, 8.0)]
+    paths = plot_prefix_sweep(records, tmp_path)
+    png_magic = b"\x89PNG\r\n\x1a\n"
+    assert len(paths) == 2 and all(p.read_bytes()[:8] == png_magic for p in paths)
+    rows = sweep_table(records)
+    assert [row["system"] for row in rows[:2]] == ["engine", "engine_prefix"]

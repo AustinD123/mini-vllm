@@ -5,7 +5,7 @@ import pytest
 from minivllm.bench.results import make_result, validate_result
 
 METRICS = {f"{name}_{p}": 0.1 for name in ("ttft", "tpot", "itl", "e2e") for p in (50, 90, 99)}
-METRICS.update(throughput=1.0, goodput=1.0, output_tokens=4, num_requests=2)
+METRICS.update(throughput=1.0, goodput=1.0, output_tokens=4, num_requests=2, cached_tokens=0, prefix_hit_rate=0.0)
 
 
 def record(fraction: float = 0.5) -> dict:

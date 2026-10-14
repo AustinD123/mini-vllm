@@ -68,13 +68,31 @@ def test_prefix_caching_through_engine_matches_generate(device):
     assert outputs[1] == hf_generate(ref, b, 4)
 
 
+def run_staged_peak(engine, reqs, max_new):
+    """Like run_tracking_peak, but the later requests arrive after the first prefill has run.
+
+    Blocks are shareable only once computed, so a shared prefix saves memory only for a
+    request that comes after the first one's prefill.
+    """
+    engine.add_request(0, reqs[0], max_new)
+    peak = 0
+    engine.step()
+    peak = max(peak, engine.block_pool.num_blocks - engine.block_pool.num_free)
+    for i in range(1, len(reqs)):
+        engine.add_request(i, reqs[i], max_new)
+    while engine.has_work():
+        engine.step()
+        peak = max(peak, engine.block_pool.num_blocks - engine.block_pool.num_free)
+    return {i: engine.tokens[i][len(reqs[i]):] for i in range(len(reqs))}, peak
+
+
 def test_prefix_cache_on_and_off_give_same_tokens_with_fewer_blocks(device):
     ref, paged = make_models(device=device)
     reqs = shared_prefix_workload()
     off = make_engine(paged, num_blocks=16, max_batch=3, token_budget=64)
     on = make_engine(paged, num_blocks=16, max_batch=3, token_budget=64, prefix_cache=True)
-    out_off, peak_off = run_tracking_peak(off, reqs, 4)
-    out_on, peak_on = run_tracking_peak(on, reqs, 4)
+    out_off, peak_off = run_staged_peak(off, reqs, 4)
+    out_on, peak_on = run_staged_peak(on, reqs, 4)
     assert out_on == out_off
     for i, p in enumerate(reqs):
         assert out_on[i] == hf_generate(ref, p, 4), f"request {i}"

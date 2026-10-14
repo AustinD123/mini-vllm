@@ -53,3 +53,33 @@ def test_rerun_with_same_seed_gives_identical_token_counts(tmp_path):
         return [(r["system"], r["workload"]["rate"], r["metrics"]["output_tokens"]) for r in records]
 
     assert counts(first) == counts(second)
+
+
+SHARED_PREFIX = dict(
+    rates=[4.0],
+    num_requests=12,
+    seed=5,
+    max_batch=4,
+    token_budget=64,
+    num_blocks=32,
+    length_overrides=dict(
+        prompt_mu=2.0, prompt_sigma=0.3, output_mu=1.3, output_sigma=0.3, shared_prefix_len=32, max_len=16
+    ),
+)
+
+
+def test_shared_prefix_sweep_point_reports_a_prefix_hit_rate(tmp_path):
+    # Hashes register only after compute, so sharing needs requests that arrive over time.
+    # The workload uses Poisson arrivals (never all at t=0), which is what makes caching measurable.
+    from minivllm.bench.jobs import build_jobs
+    from minivllm.bench.workload import make_workload
+
+    requests = make_workload(rate=4.0, num_requests=12, seed=5, **SHARED_PREFIX["length_overrides"])
+    arrivals = [r.arrival_time for r in requests]
+    assert arrivals[0] > 0.0 and arrivals == sorted(arrivals) and len(set(arrivals)) == len(arrivals)
+    assert all(j.prompt_ids[:32] == build_jobs(requests, 50, 5)[0].prompt_ids[:32] for j in build_jobs(requests, 50, 5))
+
+    ref, paged = make_models()
+    (record,) = run_sweep(ref, paged, out_dir=tmp_path, systems=("engine_prefix",), **SHARED_PREFIX)
+    assert record["metrics"]["cached_tokens"] > 0
+    assert record["metrics"]["prefix_hit_rate"] > 0

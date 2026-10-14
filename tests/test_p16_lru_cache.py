@@ -13,6 +13,7 @@ def prompt(value: int) -> list[int]:
 def test_freed_prefix_is_a_hit():
     cache = PrefixCache(BlockPool(4), BLOCK)
     cache.admit(0, prompt(1))
+    cache.mark_computed(0, 17)
     cache.free(0)
     assert cache.admit(1, prompt(1)) == 16
 
@@ -21,10 +22,13 @@ def test_oldest_cached_block_is_evicted_first():
     pool = BlockPool(3)
     cache = PrefixCache(pool, BLOCK)
     cache.admit(0, prompt(1))  # A
+    cache.mark_computed(0, 17)
     cache.free(0)
     cache.admit(1, prompt(2))  # B
+    cache.mark_computed(1, 17)
     cache.free(1)
     cache.admit(2, prompt(3))  # C: pool is short, so A is evicted
+    cache.mark_computed(2, 17)
     cache.free(2)
     assert cache.admit(3, prompt(2)) == 16  # B survived
 
@@ -33,12 +37,15 @@ def test_evicted_hash_is_no_longer_a_hit():
     pool = BlockPool(3)
     cache = PrefixCache(pool, BLOCK)
     cache.admit(0, prompt(1))
+    cache.mark_computed(0, 17)
     cache.free(0)
     assert cache.admit(1, prompt(1)) == 16  # cached before any pressure
     cache.free(1)
     cache.admit(2, prompt(2))
+    cache.mark_computed(2, 17)
     cache.free(2)
     cache.admit(3, prompt(3))  # pressure: A's block is evicted
+    cache.mark_computed(3, 17)
     cache.free(3)
     assert cache.admit(4, prompt(1)) == 0
 
@@ -48,5 +55,6 @@ def test_live_block_is_never_evicted():
     pool = BlockPool(3)
     cache = PrefixCache(pool, BLOCK)
     cache.admit(0, prompt(1))  # still in use, not cached
+    cache.mark_computed(0, 17)
     with pytest.raises(NoFreeBlocks):
         cache.admit(1, prompt(2))  # needs 2 blocks, only 1 free, nothing cached
