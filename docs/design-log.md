@@ -15,6 +15,11 @@ content). This becomes the blog post.
 
 ---
 
+### P22 — GQA
+Checkpoint answer: TODO (human to fill)
+
+---
+
 ## P9 review findings (chunked prefill)
 
 - **Partial chunks were never recorded.** `Scheduler.update` only advanced sequences in `sampled`, so a prefill chunk that didn't finish its prompt was lost and the next step re-requested it. Fixed: `update` now records progress for every sequence in the step's output, and `sampled` only decides whether that call samples.
