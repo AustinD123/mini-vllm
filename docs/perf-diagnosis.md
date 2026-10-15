@@ -1,6 +1,6 @@
 # Decode-step performance diagnosis
 
-Diagnosis only. No engine, scheduler or attention code was changed.
+Diagnosis of the step before the fixes. The fixes and the after-fix measurements are in section 6.
 
 Written for: the project owner, who is building this to understand it.
 

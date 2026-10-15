@@ -159,3 +159,63 @@ def sizing_check(config, dtype: torch.dtype, *, block_size: int = 16, fraction: 
     del pool
     torch.cuda.empty_cache()
     return result
+
+
+def identical_outputs_gate(
+    ref_model,
+    paged_model,
+    jobs,
+    *,
+    max_batch: int,
+    token_budget: int,
+    num_blocks: int,
+    block_size: int = 16,
+    static_batch: int | None = None,
+) -> dict:
+    """Greedy outputs of sequential HF, static HF and the engine (both attention paths) must be identical.
+
+    The same gate the test suite runs on the tiny model (tests/test_baselines.py), here on the real model
+    and the GPU. Outputs do not depend on timing, so every request arrives at 0 and the clock is a FakeClock.
+    Returns a JSON-ready record. `passed` is True only when every comparison matches.
+    """
+    from minivllm.bench.baselines import run_sequential, run_static
+    from minivllm.clock import FakeClock
+
+    sequential, _ = run_sequential(ref_model, jobs, FakeClock())
+    static, _ = run_static(ref_model, jobs, FakeClock(), max_batch=static_batch or max_batch)
+    cfg = paged_model.config
+    engines = {}
+    for label, batched in (("engine", True), ("engine_per_sequence", False)):
+        engine = Engine(
+            paged_model, num_blocks=num_blocks, block_size=block_size, max_batch=max_batch,
+            token_budget=token_budget, num_layers=cfg.num_hidden_layers, num_kv_heads=cfg.num_key_value_heads,
+            head_dim=cfg.hidden_size // cfg.num_attention_heads, dtype=next(paged_model.parameters()).dtype,
+            clock=FakeClock(), batched_decode=batched,
+        )
+        for job in jobs:
+            engine.add_request(job.request_id, list(job.prompt_ids), job.output_len)
+        engines[label] = engine.run()
+
+    def first_mismatch(got: dict) -> int | None:
+        for job in jobs:
+            if got[job.request_id] != sequential[job.request_id]:
+                return job.request_id
+        return None
+
+    lengths_ok = all(len(sequential[job.request_id]) == job.output_len for job in jobs)
+    checks = {
+        "lengths_match_output_len": lengths_ok,
+        "static_equals_sequential": static == sequential,
+        "engine_equals_sequential": engines["engine"] == sequential,
+        "engine_per_sequence_equals_sequential": engines["engine_per_sequence"] == sequential,
+    }
+    return {
+        "requests": len(jobs),
+        "output_tokens": sum(len(v) for v in sequential.values()),
+        "max_batch": max_batch,
+        "token_budget": token_budget,
+        "num_blocks": num_blocks,
+        "checks": checks,
+        "first_mismatch_request": {"static": first_mismatch(static), "engine": first_mismatch(engines["engine"])},
+        "passed": all(checks.values()),
+    }
