@@ -70,6 +70,7 @@ class Engine:
         dtype: torch.dtype | None = None,
         prefix_cache: bool = False,
         clock: Clock | None = None,
+        batched_decode: bool = True,
     ) -> None:
         """Build the engine. dtype and device default to the model's, so a fp16 model gets an fp16 KV pool.
 
@@ -86,7 +87,7 @@ class Engine:
         self._arrival_order = itertools.count()
         self.block_pool = BlockPool(num_blocks)
         self.kv = KVPool(num_layers, num_blocks, block_size, num_kv_heads, head_dim, dtype=dtype, device=param.device)
-        self.runner = RealRunner(model, self.kv)
+        self.runner = RealRunner(model, self.kv, batched_decode=batched_decode)
         cache = PrefixCache(self.block_pool, block_size) if prefix_cache else None
         self.seqs: dict[int, Sequence] = {}
         self.tokens: dict[int, list[int]] = {}

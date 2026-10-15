@@ -50,6 +50,7 @@ def make_engine(
     prefix_cache: bool = False,
     clock: Clock | None = None,
     check_invariants: bool = True,
+    batched_decode: bool = True,
 ) -> Engine:
     cfg = paged.config
     engine = Engine(
@@ -64,6 +65,7 @@ def make_engine(
         dtype=torch.float64,
         prefix_cache=prefix_cache,
         clock=clock,
+        batched_decode=batched_decode,
     )
     if not check_invariants:
         return engine

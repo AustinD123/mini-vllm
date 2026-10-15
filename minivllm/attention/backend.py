@@ -68,6 +68,7 @@ from dataclasses import dataclass
 import torch
 from transformers import AttentionInterface
 
+from minivllm.attention.batched import paged_decode_attention
 from minivllm.attention.gqa import grouped_query_attention
 from minivllm.attention.kv_pool import KVPool
 from minivllm.core.block_table import slot_mapping
@@ -101,6 +102,21 @@ class StepContext:
     seqs: list[SeqSlice]
     ctx_index: torch.Tensor | None = None
     validated: bool = False
+    decode: DecodePlan | None = None
+
+
+@dataclass
+class DecodePlan:
+    """The decode-only sequences of one step, built once per step by the runner (P23b).
+
+    rows          [B] long: the packed row of each decode token, in seqs order
+    block_tables  [B, max_blocks] long: each row's block table, padded with its first block
+    context_lens  [B] long: each row's context_len
+    """
+
+    rows: torch.Tensor
+    block_tables: torch.Tensor
+    context_lens: torch.Tensor
 
 
 def _context_index(seqs: list[SeqSlice], block_size: int, device: torch.device) -> torch.Tensor:
@@ -189,16 +205,26 @@ def paged_backend_forward(
             raise ValueError(f"ctx_index has {ctx_index.shape[0]} entries but the sequences hold {expected} tokens")
     k_flat = pool.k[layer].reshape(-1, pool.k.shape[3], pool.k.shape[4])
     v_flat = pool.v[layer].reshape(-1, pool.v.shape[3], pool.v.shape[4])
-    outputs = []
+    decode = context.decode
+    if decode is not None:
+        num_decode = sum(1 for seq in context.seqs if seq.length == 1)
+        if decode.rows.shape[0] != num_decode:
+            raise ValueError(f"decode plan has {decode.rows.shape[0]} rows but the step has {num_decode} decode sequences")
+    out = query[0].new_empty(query.shape[1], query.shape[2], query.shape[3])  # [Hq, T, D]
     offset = 0
     for seq in context.seqs:
         slots = ctx_index[offset:offset + seq.context_len]
         offset += seq.context_len
+        if decode is not None and seq.length == 1:
+            continue  # decode rows: one batched call below
         q = query[0, :, seq.start:seq.start + seq.length]  # [Hq, L, D]
         k_ctx = k_flat[slots].transpose(0, 1)  # [Hkv, C, D]
         v_ctx = v_flat[slots].transpose(0, 1)  # [Hkv, C, D]
-        outputs.append(grouped_query_attention(q, k_ctx, v_ctx))  # [Hq, L, D]
-    out = torch.cat(outputs, dim=1)  # [Hq, T, D]
+        out[:, seq.start:seq.start + seq.length] = grouped_query_attention(q, k_ctx, v_ctx)
+    if decode is not None:
+        q_dec = query[0].index_select(1, decode.rows).transpose(0, 1)  # [B, Hq, D]
+        dec = paged_decode_attention(q_dec, pool, layer, decode.block_tables, decode.context_lens)  # [B, Hq, D]
+        out.index_copy_(1, decode.rows, dec.transpose(0, 1).to(out.dtype))
     return out.transpose(0, 1).unsqueeze(0), None  # [1, T, Hq, D]
 
 

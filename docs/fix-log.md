@@ -137,3 +137,20 @@ One entry per fix. Each names the bug, how it showed up, the root cause, the fix
 - **Fix:** gather the sampled rows into one index tensor, take one `argmax(dim=-1)` over them, and copy the result with one `.tolist()` (`minivllm/engine.py:Engine.step`).
 - **Test:** the greedy-equals-HF gates (`tests/test_p23_backend.py::test_real_model_greedy_matches_generate` with `MINIVLLM_REAL_MODEL`, and `tests/test_baselines.py` gate tests), plus the sync count test above.
 - **Question:** the step still copies the row index to the device. Why is that one copy not a per-sequence sync?
+
+## 13. Decode attention looped over sequences in every layer
+
+- **Bug:** `paged_backend_forward` ran one gather and one attention call per sequence per layer. A decode step at batch 32 made 768 such calls, about 10 kernel launches each.
+- **How it showed up:** an isolated backend call for one layer took 17 ms at batch 32, and the same time whether or not the GPU was waited on. The step time scaled linearly with batch.
+- **Root cause:** the attention from P20 and P23 handles one sequence per call. The host spends about 0.6 ms per sequence-layer enqueuing kernels, so the call is launch-bound.
+- **Fix:** `paged_decode_attention` (`minivllm/attention/batched.py`) does one gather over a padded block table and one masked attention call for all decode rows. `RealRunner.forward` builds the decode plan once per step, and `paged_backend_forward` routes length-1 sequences through the batched call and prefill chunks through the old path. `batched_decode=False` on `RealRunner` or `Engine` restores the old path for A/B tests.
+- **Test:** `tests/test_p23b_batched.py` (agreement with the reference, NaN padding, flat kernel count) and `tests/test_p23b_wiring.py` (identical logits and identical engine outputs with and without the flag).
+- **Question:** why is the kernel count the same for batch sizes 2 to 64 but one higher at batch 1?
+
+## 14. Padding would leak NaN through a masked softmax
+
+- **Bug:** found in the design, not in a run. Masking only the scores would leave `0 * NaN = NaN` in the probability-times-V matmul whenever a padded or unused slot holds NaN.
+- **Root cause:** a softmax weight of exactly 0 does not zero a NaN value; the product is NaN.
+- **Fix:** positions at or past `context_len` get score -inf and their V is set to 0 before the matmul (`minivllm/attention/batched.py:paged_decode_attention`). I did not use a reserved null block as vLLM does: it would take one block id out of `BlockPool` (changing P1 accounting) and would still depend on that block staying zero. Masking V keeps the pool and the allocator unchanged.
+- **Test:** `tests/test_p23b_batched.py::test_nan_in_every_unreferenced_slot_leaves_the_output_unchanged` fills every slot no real position uses with NaN and requires finite, unchanged output.
+- **Question:** if the V mask were removed, which slot of the test would produce the NaN, and in which matmul?

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import torch
 
-from minivllm.attention.backend import SeqSlice, StepContext
+from minivllm.attention.backend import DecodePlan, SeqSlice, StepContext
 from minivllm.attention.kv_pool import KVPool
 from minivllm.core.block_table import slot_mapping
 
@@ -29,9 +29,11 @@ from minivllm.core.block_table import slot_mapping
 class RealRunner:
     """Holds the model and pool, and runs packed steps. See the module docstring."""
 
-    def __init__(self, model: torch.nn.Module, pool: KVPool) -> None:
+    def __init__(self, model: torch.nn.Module, pool: KVPool, batched_decode: bool = True) -> None:
+        """batched_decode=False sends every sequence through the per-sequence path (the A/B baseline)."""
         self.model = model
         self.pool = pool
+        self.batched_decode = batched_decode
 
     def forward(self, token_ids: list[int], seqs: list[SeqSlice]) -> torch.Tensor:
         """Run one packed step and return [T, vocab] logits.
@@ -43,20 +45,41 @@ class RealRunner:
         block_size = self.pool.k.shape[2]
         device = self.pool.k.device
         T = len(token_ids)
+        if T != sum(seq.length for seq in seqs):
+            raise ValueError(f"{T} tokens for sequences that lay out {sum(seq.length for seq in seqs)} rows")
         positions: list[int] = []
         slots: list[int] = []
         ctx_index: list[int] = []
+        decode = [seq for seq in seqs if seq.length == 1] if self.batched_decode else []
         for seq in seqs:
             first = seq.context_len - seq.length
             positions.extend(range(first, seq.context_len))
             slots.extend(slot_mapping(seq.block_table, first, seq.context_len, block_size))
             ctx_index.extend(slot_mapping(seq.block_table, 0, seq.context_len, block_size))
-        packed = torch.tensor(token_ids + positions + slots + ctx_index, dtype=torch.long).to(device)
+        # Decode plan: rows, context lengths and padded block tables, sent in the same copy.
+        rows = [seq.start for seq in decode]
+        lengths = [seq.context_len for seq in decode]
+        width = max((-(-seq.context_len // block_size) for seq in decode), default=0)
+        tables: list[int] = []
+        for seq in decode:
+            table = seq.block_table[:-(-seq.context_len // block_size)]
+            tables.extend(table + [table[0]] * (width - len(table)))
+        packed = torch.tensor(token_ids + positions + slots + ctx_index + rows + lengths + tables, dtype=torch.long).to(device)
         input_ids = packed[0:T].unsqueeze(0)
         position_ids = packed[T:2 * T].unsqueeze(0)
         slot_tensor = packed[2 * T:3 * T]
-        index_tensor = packed[3 * T:3 * T + len(ctx_index)]
-        ctx = StepContext(pool=self.pool, slots=slot_tensor, seqs=seqs, ctx_index=index_tensor, validated=True)
+        start = 3 * T
+        index_tensor = packed[start:start + len(ctx_index)]
+        start += len(ctx_index)
+        plan = None
+        if decode:
+            B = len(decode)
+            plan = DecodePlan(
+                rows=packed[start:start + B],
+                context_lens=packed[start + B:start + 2 * B],
+                block_tables=packed[start + 2 * B:start + 2 * B + B * width].view(B, width),
+            )
+        ctx = StepContext(pool=self.pool, slots=slot_tensor, seqs=seqs, ctx_index=index_tensor, validated=True, decode=plan)
         with torch.no_grad():
             outputs = self.model(input_ids=input_ids, position_ids=position_ids, use_cache=False, kv_context=ctx)
         return outputs.logits[0]
