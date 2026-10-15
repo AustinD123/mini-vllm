@@ -165,104 +165,6 @@ def swapped(obj, name: str, fn):
         setattr(obj, name, orig)
 
 
-def ablate_write_checks(eng: Engine):
-    """Measurement only: KVPool.write without its two torch.any() range checks (48 syncs per step)."""
-    kv = eng.kv
-
-    def write_unchecked(layer, slots, k, v):
-        bi = slots // kv.k.shape[2]
-        oi = slots % kv.k.shape[2]
-        kv.k[layer, bi, oi] = k
-        kv.v[layer, bi, oi] = v
-
-    return swapped(kv, "write", write_unchecked)
-
-
-class _DeviceTensorMemo:
-    """Stands in for the torch module inside the backend: torch.tensor(data, ..., device) is served
-    from a cache, so the host-to-device copy happens once per distinct slot list, not once per layer.
-    Everything else is forwarded to torch. Measurement only."""
-
-    def __init__(self) -> None:
-        self.cache: dict = {}
-
-    def __getattr__(self, name):
-        return getattr(torch, name)
-
-    def tensor(self, data, dtype=None, device=None):
-        key = (tuple(data), dtype, str(device))
-        hit = self.cache.get(key)
-        if hit is None:
-            hit = self.cache[key] = torch.tensor(data, dtype=dtype, device=device)
-        return hit
-
-
-def ablate_slot_device_memo(eng: Engine):
-    """Measurement only: slot lists and their device copies reused across the 24 layers of one forward.
-    Removes the per-layer host-to-device copy (and its sync), the largest sync source in the trace."""
-    memo_obj = _DeviceTensorMemo()
-    slot_ctx = ablate_slot_memo(eng)
-    orig_forward = eng.runner.forward
-
-    def forward_with_clear(*a, **k):
-        memo_obj.cache.clear()
-        return orig_forward(*a, **k)
-
-    @contextlib.contextmanager
-    def both():
-        with slot_ctx, swapped(backend_mod, "torch", memo_obj), swapped(eng.runner, "forward", forward_with_clear):
-            yield
-
-    return both()
-
-
-def ablate_slot_memo(eng: Engine):
-    """Measurement only: slot_mapping's host list reused across the 24 layers of one forward.
-    The per-layer host-to-device copy is still made, so this removes Python work, not syncs."""
-    real = backend_mod.slot_mapping
-    cache: dict = {}
-
-    def memo(block_table, start, end, block_size):
-        key = (tuple(block_table), start, end, block_size)
-        hit = cache.get(key)
-        if hit is None:
-            hit = cache[key] = real(block_table, start, end, block_size)
-        return hit
-
-    orig_forward = eng.runner.forward
-
-    def forward_with_clear(*a, **k):
-        cache.clear()
-        return orig_forward(*a, **k)
-
-    @contextlib.contextmanager
-    def both():
-        with swapped(backend_mod, "slot_mapping", memo), swapped(eng.runner, "forward", forward_with_clear):
-            yield
-
-    return both()
-
-
-def ablations(paged, cfg, batch: int, prompt_len: int, out_len: int, n: int = 40, rounds: int = 3) -> dict:
-    """Median step time with and without each ablation, interleaved so drift affects all arms equally."""
-    # Each arm is a factory, because a context manager can only be entered once.
-    eng = steady_engine(paged, cfg, num_blocks=4096, batch=batch, prompt_len=prompt_len, out_len=out_len)
-    arms = {
-        "baseline": lambda: contextlib.nullcontext(),
-        "no_pool_write_checks": lambda: ablate_write_checks(eng),
-        "slot_list_memo": lambda: ablate_slot_memo(eng),
-        "slot_device_memo": lambda: ablate_slot_device_memo(eng),
-    }
-    samples = {k: [] for k in arms}
-    for _ in range(rounds):
-        for label, make in arms.items():
-            with make():
-                samples[label].append(median(wall_times(eng, n=n, warm=2)))
-    out = {k: median(v) for k, v in samples.items()}
-    out["samples_ms"] = samples
-    return out
-
-
 def invariant_and_hash_cost(eng: Engine, n: int = 20) -> dict[str, float]:
     """Cost of the checks that are off in the bench path, measured on the same live state."""
     t = PERF()
@@ -453,7 +355,6 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--prompt-len", type=int, default=64)
     ap.add_argument("--out-len", type=int, default=256, help="output budget per request; must exceed the steps run on one engine")
-    ap.add_argument("--ablations-only", action="store_true")
     ap.add_argument("--wall-only", action="store_true", help="median step time at batch 1, 8 and 32, nothing else")
     ap.add_argument("--per-sequence", action="store_true", help="old path: per-sequence attention (batched_decode=False)")
     args = ap.parse_args()
@@ -469,11 +370,14 @@ def main() -> None:
     B, P, O = args.batch, args.prompt_len, args.out_len
 
     if args.wall_only:
+        ref = AutoModelForCausalLM.from_pretrained(MODEL_ID, dtype=torch.float16).eval().to("cuda")
         rows = []
         for batch in (1, 8, 32):
             e = steady_engine(paged, cfg, num_blocks=4096, batch=batch, prompt_len=P, out_len=256)
             ts = wall_times(e, n=30)
-            rows.append({"batch": batch, "median_ms": median(ts), "tok_per_s": batch / (median(ts) / 1e3)})
+            hf_ms = hf_forward(ref, batch, P)[f"batch_{batch}_median_ms"]
+            rows.append({"batch": batch, "median_ms": median(ts), "tok_per_s": batch / (median(ts) / 1e3),
+                         "hf_forward_ms": hf_ms, "ratio_engine_over_hf": median(ts) / hf_ms})
             del e
             torch.cuda.empty_cache()
         out = {"gpu": results["gpu"], "git": os.popen("git rev-parse --short HEAD").read().strip(),
@@ -481,13 +385,6 @@ def main() -> None:
         with open(os.path.join(args.out, "wall_only.json"), "w") as f:
             json.dump(out, f, indent=2, default=float)
         print(json.dumps(out, indent=2, default=float))
-        return
-
-    if args.ablations_only:
-        out = {"gpu": results["gpu"], "batch": B, "ablations_ms": ablations(paged, cfg, B, P, 512)}
-        with open(os.path.join(args.out, "ablations.json"), "w") as f:
-            json.dump(out, f, indent=2, default=float)
-        print(json.dumps(out["ablations_ms"], indent=2, default=float))
         return
 
     eng = steady_engine(paged, cfg, num_blocks=4096, batch=B, prompt_len=P, out_len=O)
@@ -498,8 +395,6 @@ def main() -> None:
     results["cprofile_per_step"] = cprofile_step(eng)
     del eng
     torch.cuda.empty_cache()
-    # 512 output tokens: the ablation runs about 380 steps on one engine.
-    results["ablations_ms"] = ablations(paged, cfg, B, P, 512)
     eng = steady_engine(paged, cfg, num_blocks=4096, batch=B, prompt_len=P, out_len=O)
     results["trace"] = trace_step(eng, args.out)
     results["sync_sites"] = sync_sites(eng)
