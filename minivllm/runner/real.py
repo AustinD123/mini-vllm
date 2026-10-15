@@ -35,12 +35,17 @@ class RealRunner:
         self.pool = pool
         self.batched_decode = batched_decode
 
-    def forward(self, token_ids: list[int], seqs: list[SeqSlice]) -> torch.Tensor:
-        """Run one packed step and return [T, vocab] logits.
+    def forward(self, token_ids: list[int], seqs: list[SeqSlice], sample_rows: list[int] | None = None) -> torch.Tensor:
+        """Run one packed step and return logits.
 
-        Every per-step tensor (input ids, positions, write slots, the context slot index) is built
-        from host lists into one packed tensor, and moved to the device with one copy. The layers
-        then read slices of it, so a step makes one host-to-device copy and no per-layer copies.
+        sample_rows=None returns [T, vocab], one row per packed token. A list of packed row indices
+        returns [len(sample_rows), vocab], in the order given. lm_head then runs only on those rows,
+        so a prefill does not compute logits for every prompt token.
+
+        Every per-step tensor (input ids, positions, write slots, the context slot index, the decode
+        plan and the sample rows) is built from host lists into one packed tensor, and moved to the
+        device with one copy. The layers then read slices of it, so a step makes one host-to-device
+        copy and no per-layer copies.
         """
         block_size = self.pool.k.shape[2]
         device = self.pool.k.device
@@ -64,7 +69,9 @@ class RealRunner:
         for seq in decode:
             table = seq.block_table[:-(-seq.context_len // block_size)]
             tables.extend(table + [table[0]] * (width - len(table)))
-        packed = torch.tensor(token_ids + positions + slots + ctx_index + rows + lengths + tables, dtype=torch.long).to(device)
+        keep = list(sample_rows) if sample_rows is not None else []
+        keep_offset = 3 * T + len(ctx_index) + len(rows) + len(lengths) + len(tables)
+        packed = torch.tensor(token_ids + positions + slots + ctx_index + rows + lengths + tables + keep, dtype=torch.long).to(device)
         input_ids = packed[0:T].unsqueeze(0)
         position_ids = packed[T:2 * T].unsqueeze(0)
         slot_tensor = packed[2 * T:3 * T]
@@ -80,6 +87,9 @@ class RealRunner:
                 block_tables=packed[start + 2 * B:start + 2 * B + B * width].view(B, width),
             )
         ctx = StepContext(pool=self.pool, slots=slot_tensor, seqs=seqs, ctx_index=index_tensor, validated=True, decode=plan)
+        # A tensor logits_to_keep selects hidden rows before lm_head (transformers' Qwen2 forward).
+        logits_to_keep = packed[keep_offset:keep_offset + len(keep)] if sample_rows is not None else 0
         with torch.no_grad():
-            outputs = self.model(input_ids=input_ids, position_ids=position_ids, use_cache=False, kv_context=ctx)
+            outputs = self.model(input_ids=input_ids, position_ids=position_ids, use_cache=False, kv_context=ctx,
+                                 logits_to_keep=logits_to_keep)
         return outputs.logits[0]
