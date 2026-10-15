@@ -86,6 +86,28 @@ under: batching, chunked prefill, prefix caching, recompute preemption.
 
 ---
 
+## P23b — Batched decode attention (agent-written)
+**Status:** written by the agent (not a human-written problem body). Recorded here so the
+checkpoint and the P23 exactness gates cover it.
+**File:** `minivllm/attention/batched.py`
+```python
+def paged_decode_attention(q, pool, layer, block_tables, context_lens) -> torch.Tensor: ...
+# q [B, Hq, D]; block_tables [B, max_blocks] (padded); context_lens [B]; returns [B, Hq, D]
+```
+One gather and one masked attention call for the whole batch, with no Python loop over sequences.
+GQA without `repeat_interleave`. Softmax in fp32. Padding is NaN-safe: scores past `context_len`
+are masked to -inf, and V there is zeroed before the matmul.
+The backend routes every decode-only sequence (length 1) in a step through it, and prefill chunks
+through the per-sequence path. `RealRunner(..., batched_decode=False)` restores the old path for
+A/B tests.
+**Tests:** `tests/test_p23b_batched.py`: agreement with `paged_attention_single` for context
+lengths 1, 15, 16, 17, 100, 300; shuffled block tables; batch of one; the Qwen2.5-0.5B head layout;
+NaN in every unreferenced slot; kernel count flat across batch sizes on CUDA.
+**Checkpoint:** why does `0 * NaN` break naive masking (masking the scores is not enough), and how
+does vLLM's null block relate to masking V?
+
+---
+
 ## P24 — KV pool sizing
 ```python
 def kv_bytes_per_token(config, dtype) -> int: ...

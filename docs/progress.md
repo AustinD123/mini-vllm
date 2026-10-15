@@ -28,6 +28,7 @@ Hardware: NVIDIA laptop GPU (VRAM: TBD) + free Colab T4
 | 21 | Packed batch | reviewed |
 | 22 | GQA | tests pass |
 | 23 | HF backend + exactness | reviewed |
+| 23b | Batched decode attention (agent-written) | tests pass |
 | 24 | KV pool sizing | reviewed |
 | 25 | Benchmark sweep | in progress |
 | 26 | Fidelity check | todo |
