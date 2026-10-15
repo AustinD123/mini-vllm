@@ -1,0 +1,30 @@
+{
+  "model": "tiny Qwen2, float64, vocab 50, 2 layers (not the real model)",
+  "seed": 0,
+  "requests": 16,
+  "output_tokens": 1805,
+  "max_batch": 16,
+  "token_budget": 512,
+  "num_blocks": 512,
+  "checks": {
+    "lengths_match_output_len": true,
+    "static_equals_sequential": true,
+    "engine_equals_sequential": true,
+    "engine_per_sequence_equals_sequential": true
+  },
+  "first_mismatch_request": {
+    "static": null,
+    "engine": null
+  },
+  "passed": true,
+  "notes": "Same gate as the notebook dry run. The real model in float64 needs about 8 GB for two copies, which the 3050 (4 GB) cannot hold.",
+  "env": {
+    "gpu": "NVIDIA GeForce RTX 3050 Laptop GPU",
+    "torch": "2.14.1+cu130",
+    "transformers": "5.19.0",
+    "python": "3.13.13",
+    "git_commit": "fe82a1e2df6fb6acac6f1dca9dae2c161eeff68f",
+    "cuda": "13.0",
+    "free_mib_at_start": 3300
+  }
+}

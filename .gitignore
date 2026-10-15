@@ -2,6 +2,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .claude/settings.local.json
-results/
+results/*
+!results/3050/
+!results/profile/
+!results/sharegpt/
+!results/t4-2026-10-15-before-fix/
 *.zip
 profile_out/

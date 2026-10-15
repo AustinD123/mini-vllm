@@ -200,3 +200,5 @@ The "model non-attention" figure rose because the rest of the step got much smal
 **What is left.** At batch 1 the engine is 1.5x HF, with about 50 ms of fixed per-step cost on this laptop. Per layer the backend still launches about 20 small kernels of its own (validation-free gather, pool write index math, the decode mask). The next candidate is hoisting the decode mask and the write indices to once per step. Not done this round: the gain is within the noise at batch 32.
 
 **Sync fixes alone are small.** Removing 848 of 851 syncs took batch 32 from 1184 to 1023 ms (-14%). The ablation in section 1 predicted about -27%. The sync stall was real, but most of the cost was per-sequence launches, which only the batched call removes.
+
+**Prefill logits (fix-log 15).** After these measurements, `lm_head` runs only on the sampled rows, so a prefill no longer builds logits for every prompt token. On the 3050 the prefill step time changed by -8% to +6% across four alternating sessions (inside the session spread). Raw numbers: `results/3050/prefill_{before,after}_s{1..4}.json`.

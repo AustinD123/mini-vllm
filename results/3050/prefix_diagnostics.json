@@ -1,0 +1,74 @@
+{
+ "env": {
+  "gpu": "NVIDIA GeForce RTX 3050 Laptop GPU",
+  "torch": "2.14.1+cu130",
+  "transformers": "5.19.0",
+  "python": "3.13.13",
+  "git_commit": "fe82a1e2df6fb6acac6f1dca9dae2c161eeff68f",
+  "cuda": "13.0"
+ },
+ "runs": [
+  {
+   "off": {
+    "cache": false,
+    "clock": "FakeClock",
+    "prompt_tokens_total": 2043,
+    "cached_tokens": 0,
+    "prompt_forwarded": 2043,
+    "forward_calls": 317,
+    "steps": 317,
+    "preemptions": 0,
+    "ttft_p50": 0.009709400000000201,
+    "ttft_p99": 0.018580089568490832,
+    "tpot_p50": 0.005402546153846175,
+    "wall_s": 17.15665939997416
+   },
+   "on": {
+    "cache": true,
+    "clock": "FakeClock",
+    "prompt_tokens_total": 2043,
+    "cached_tokens": 1472,
+    "prompt_forwarded": 571,
+    "forward_calls": 321,
+    "steps": 321,
+    "preemptions": 0,
+    "ttft_p50": 0.006659700000000157,
+    "ttft_p99": 0.011836498166183596,
+    "tpot_p50": 0.005353442307692311,
+    "wall_s": 18.799695800058544
+   },
+   "identical_tokens": false
+  },
+  {
+   "off": {
+    "cache": false,
+    "clock": "WallClock",
+    "prompt_tokens_total": 2043,
+    "cached_tokens": 0,
+    "prompt_forwarded": 2043,
+    "forward_calls": 118,
+    "steps": 118,
+    "preemptions": 0,
+    "ttft_p50": 0.10434445464111697,
+    "ttft_p99": 0.14576714256093393,
+    "tpot_p50": 0.060532330768182874,
+    "wall_s": 7.02319910004735
+   },
+   "on": {
+    "cache": true,
+    "clock": "WallClock",
+    "prompt_tokens_total": 2043,
+    "cached_tokens": 1472,
+    "prompt_forwarded": 571,
+    "forward_calls": 118,
+    "steps": 118,
+    "preemptions": 0,
+    "ttft_p50": 0.09281248662690489,
+    "ttft_p99": 0.1313271426201288,
+    "tpot_p50": 0.05803434231067793,
+    "wall_s": 7.002479100017808
+   },
+   "identical_tokens": true
+  }
+ ]
+}

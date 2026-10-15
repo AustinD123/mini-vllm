@@ -1,0 +1,62 @@
+{
+  "model": "Qwen/Qwen2.5-0.5B-Instruct",
+  "dtype": "fp32",
+  "max_len": 256,
+  "requests": 16,
+  "seed": 0,
+  "free_running": {
+    "top1": 1.0,
+    "first_divergence": {
+      "0": null,
+      "1": null,
+      "2": null,
+      "3": null,
+      "4": null,
+      "5": null,
+      "6": null,
+      "7": null,
+      "8": null,
+      "9": null,
+      "10": null,
+      "11": null,
+      "12": null,
+      "13": null,
+      "14": null,
+      "15": null
+    },
+    "positions": 1805
+  },
+  "teacher_forced": {
+    "top1": 1.0,
+    "per_request": {
+      "0": 1.0,
+      "1": 1.0,
+      "2": 1.0,
+      "3": 1.0,
+      "4": 1.0,
+      "5": 1.0,
+      "6": 1.0,
+      "7": 1.0,
+      "8": 1.0,
+      "9": 1.0,
+      "10": 1.0,
+      "11": 1.0,
+      "12": 1.0,
+      "13": 1.0,
+      "14": 1.0,
+      "15": 1.0
+    },
+    "positions": 1805
+  },
+  "preemptions": 0,
+  "notes": "free_running feeds back each system's own tokens, so one divergence can cascade. teacher_forced feeds the reference tokens and scores each position alone.",
+  "env": {
+    "gpu": "NVIDIA GeForce RTX 3050 Laptop GPU",
+    "torch": "2.14.1+cu130",
+    "transformers": "5.19.0",
+    "python": "3.13.13",
+    "git_commit": "fe82a1e2df6fb6acac6f1dca9dae2c161eeff68f",
+    "cuda": "13.0",
+    "free_mib_at_start": 3300
+  }
+}

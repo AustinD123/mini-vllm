@@ -1,0 +1,21 @@
+{
+  "model": "Qwen/Qwen2.5-0.5B-Instruct",
+  "dtype": "fp16",
+  "free_mib_before": 3250,
+  "kv_memory_fraction": 0.5,
+  "predicted_blocks": 8665,
+  "predicted_bytes": 1703608320,
+  "pool_bytes": 1703608320,
+  "measured_peak_bytes": 1703608320,
+  "peak_over_prediction": 1.0,
+  "notes": "measured_peak_bytes is torch.cuda.max_memory_allocated around the KV pool allocation.",
+  "env": {
+    "gpu": "NVIDIA GeForce RTX 3050 Laptop GPU",
+    "torch": "2.14.1+cu130",
+    "transformers": "5.19.0",
+    "python": "3.13.13",
+    "git_commit": "fe82a1e2df6fb6acac6f1dca9dae2c161eeff68f",
+    "cuda": "13.0",
+    "free_mib_at_start": 3300
+  }
+}

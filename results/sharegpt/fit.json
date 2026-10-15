@@ -1,0 +1,17 @@
+{
+  "source": "anon8231489123/ShareGPT_Vicuna_unfiltered / ShareGPT_V3_unfiltered_cleaned_split.json",
+  "file": "ShareGPT_V3_unfiltered_cleaned_split.json",
+  "file_bytes": 672837942,
+  "file_sha256": "35f0e213ce091ed9b9af2a1f0755e9d39f9ccec34ab281cd4ca60d70f6479ba4",
+  "tokenizer": "Qwen/Qwen2.5-0.5B-Instruct",
+  "add_special_tokens": false,
+  "filter": "first turn human, second turn gpt; empty prompt or reply dropped",
+  "cap": null,
+  "conversations_in_file": 94145,
+  "conversations_with_first_pair": 58787,
+  "conversations_fitted": 58766,
+  "prompt_mu": 3.835436309643282,
+  "prompt_sigma": 1.749919715907169,
+  "output_mu": 5.183726318827329,
+  "output_sigma": 1.1606117987674807
+}

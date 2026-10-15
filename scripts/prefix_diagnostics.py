@@ -2,6 +2,7 @@
 import json
 import sys
 import time
+from pathlib import Path
 
 import torch
 from transformers import AutoModelForCausalLM
@@ -10,6 +11,7 @@ sys.path.insert(0, ".")
 from minivllm.attention.backend import BACKEND_NAME, register_backend  # noqa: E402
 from minivllm.bench.jobs import build_jobs  # noqa: E402
 from minivllm.bench.metrics import percentile, tpot, ttft  # noqa: E402
+from minivllm.bench.results import environment_info  # noqa: E402
 from minivllm.bench.workload import make_workload  # noqa: E402
 from minivllm.clock import FakeClock, WallClock  # noqa: E402
 from minivllm.engine import Engine  # noqa: E402
@@ -87,5 +89,8 @@ for clock_factory in (FakeClock, WallClock):
     identical = off.pop("outputs") == on.pop("outputs")
     results.append({"off": off, "on": on, "identical_tokens": identical})
     print(json.dumps(results[-1], indent=1), flush=True)
-with open("prefix_diag_results.json", "w") as f:
-    json.dump(results, f, indent=1)
+out = Path("results") / "3050" / "prefix_diagnostics.json"
+out.parent.mkdir(parents=True, exist_ok=True)
+env = {**environment_info(), "cuda": torch.version.cuda}
+out.write_text(json.dumps({"env": env, "runs": results}, indent=1), encoding="utf-8")
+print("wrote", out)

@@ -154,3 +154,32 @@ One entry per fix. Each names the bug, how it showed up, the root cause, the fix
 - **Fix:** positions at or past `context_len` get score -inf and their V is set to 0 before the matmul (`minivllm/attention/batched.py:paged_decode_attention`). I did not use a reserved null block as vLLM does: it would take one block id out of `BlockPool` (changing P1 accounting) and would still depend on that block staying zero. Masking V keeps the pool and the allocator unchanged.
 - **Test:** `tests/test_p23b_batched.py::test_nan_in_every_unreferenced_slot_leaves_the_output_unchanged` fills every slot no real position uses with NaN and requires finite, unchanged output.
 - **Question:** if the V mask were removed, which slot of the test would produce the NaN, and in which matmul?
+
+## 15. Prefill computed logits for every prompt row
+
+- **Bug:** `RealRunner.forward` ran `lm_head` on every packed row, so a prefill of L prompt tokens built an [L, vocab] logits tensor (151,936 columns for Qwen2.5-0.5B). The engine then kept one row per sequence. For a 256-token prompt that tensor is about 78 MB in fp16, and 255 of its rows are never read.
+- **How it showed up:** found by reading `RealRunner.forward` for the TTFT work. The sampled rows were picked out of the full logits with `index_select`.
+- **Root cause:** `forward` always returned `outputs.logits[0]` for the whole packed row, because the model was called without `logits_to_keep`.
+- **Fix:** `RealRunner.forward(..., sample_rows=...)` passes the sampled packed rows to the model as a tensor `logits_to_keep`. transformers' Qwen2 forward selects those hidden rows before `lm_head`, so only those rows are projected. The rows are sent in the step's one host copy, as the other per-step tensors are. `sample_rows=None` keeps the full [T, vocab] result for the callers that need every row (`gpu_checks.teacher_forced_agreement`, the P23 tests). `Engine.step` passes its sample rows and takes an argmax over the returned rows (`minivllm/runner/real.py:RealRunner.forward`, `minivllm/engine.py:Engine.step`).
+- **Test:** `tests/test_sample_rows.py` (the picked rows equal the full rows, out of order, on a prefill and on a batched decode step; an empty list still writes the KV). The full suite gives 369 passed and 3 skipped before and after the change. On the 3050, `scripts/gpu_checks_3050.py` gives the same agreement numbers, and the identical-outputs gate passes (`results/3050/`).
+- **Timing:** `scripts/prefill_timing.py`, run from a `git worktree` at `fe82a1e` (before) and from the working tree (after), in four alternating serial sessions on the 3050. Each value is the median of 7 repeats within a session; the table gives the median of the four session medians. Raw numbers: `results/3050/prefill_{before,after}_s{1..4}.json`.
+
+| Requests x prompt length | Before, ms (sessions) | After, ms (sessions) | After / before |
+|---|---|---|---|
+| 1 x 64 | 130.2 (132, 129, 164, 124) | 137.6 (134, 273, 142, 119) | 1.06 |
+| 1 x 256 | 137.8 (129, 135, 172, 140) | 132.1 (126, 260, 138, 119) | 0.96 |
+| 8 x 64 | 352.4 (350, 355, 441, 336) | 341.5 (329, 720, 353, 322) | 0.97 |
+| 8 x 256 | 366.9 (365, 368, 427, 359) | 337.2 (328, 687, 346, 318) | 0.92 |
+
+- The second "after" session ran about twice as slow as every other session, before and after alike, with the GPU idle and no other compute. The laptop's clock was at 210 MHz at the time, so the medians are the more reliable figure, and even they sit inside the session spread.
+- TTFT here is the prefill step time, because each request has arrival time 0 and a one-token output, so its first token comes out of that one step.
+- The first generated tokens match between the two code paths in all four sessions.
+- **Reading:** the change removes the vocabulary projection for the prompt rows, but the gain is inside the noise at these sizes, and the largest median gain is 8% (8 x 256). The prefill step on this card is dominated by the per-layer work, not by `lm_head`. The memory saving is the arithmetic above (about 78 MB per 256-token prompt) and was not measured here.
+- **Question:** the 8 x 256 prefill still builds the full [1, 2048, 896] hidden state for every layer. Which of its tensors would be the next to shrink, and what would it take to avoid building it?
+
+---
+
+## Open items (not fixes)
+
+- **Fast-suite flake: not reproduced.** The fast suite (`pytest -m "not slow"`) ran 20 times in file order and 5 times in seeded random orders (`random.Random(seed).shuffle` over the collected node IDs; `pytest-randomly` is not installed). All 25 runs gave 366 passed and 3 skipped, at commit 83ccae9. No failing test was named, so no root cause or fix is recorded. One run overlapped with a second pytest process on the same GPU and still passed. The tests most sensitive to timing or to CUDA asynchrony are `tests/test_wall_clock.py`, `tests/test_engine_arrivals.py`, `tests/test_step_overhead.py` (sync counts) and `tests/test_p23b_batched.py::test_kernel_launches_do_not_grow_with_batch_size` (profiler trace counts). The log of the failure is needed to test them.
+- **Prefix caching does not give identical tokens in fp16 on the 3050.** `scripts/prefix_diagnostics.py` reports `identical_tokens: false` with the FakeClock and with the WallClock run on `fe82a1e` as well. With the current code the WallClock run is True, so the WallClock result varies between runs. The forwarded-token counts are exact (2,043 to 571). The likely cause is that prefix caching changes which requests share a batch, and fp16 arithmetic depends on batch composition. That is not isolated here. The gate that proves exactness uses float64 (`results/3050/identical_outputs_gate.json`).
