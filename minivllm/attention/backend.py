@@ -87,11 +87,28 @@ class SeqSlice:
 
 @dataclass
 class StepContext:
-    """Everything the backend needs for one packed forward pass. See the module docstring."""
+    """Everything the backend needs for one packed forward pass. See the module docstring.
+
+    ctx_index  optional [sum of context_len] long tensor on the pool's device: the flat slot of every
+               context token, sequences concatenated in seqs order. The runner builds it once per step,
+               so the 24 layers share one copy. When None, the backend builds it on each call.
+    validated  True when the caller has already checked that every slot is in range, so the pool
+               write skips its device-side range check (a sync per layer).
+    """
 
     pool: KVPool
     slots: torch.Tensor
     seqs: list[SeqSlice]
+    ctx_index: torch.Tensor | None = None
+    validated: bool = False
+
+
+def _context_index(seqs: list[SeqSlice], block_size: int, device: torch.device) -> torch.Tensor:
+    """Flat slots of every context token, sequences concatenated in order. One host-to-device copy."""
+    slots: list[int] = []
+    for seq in seqs:
+        slots.extend(slot_mapping(seq.block_table, 0, seq.context_len, block_size))
+    return torch.tensor(slots, dtype=torch.long, device=device)
 
 
 def paged_backend_forward(
@@ -159,15 +176,27 @@ def paged_backend_forward(
     k = key[0].transpose(0, 1)  # [T, Hkv, D]
     v = value[0].transpose(0, 1)  # [T, Hkv, D]
     block_size = pool.k.shape[2]
-    pool.write(layer, context.slots.to(pool.k.device), k, v)
-    outputs = []
     for seq in context.seqs:
         if seq.context_len > len(seq.block_table) * block_size:
             raise ValueError(f"block_table of length {len(seq.block_table)} cannot cover context_len {seq.context_len} with block_size {block_size}")
+    pool.write(layer, context.slots.to(pool.k.device), k, v, check_range=not context.validated)
+    if context.ctx_index is None:
+        ctx_index = _context_index(context.seqs, block_size, pool.k.device)
+    else:
+        ctx_index = context.ctx_index
+        expected = sum(seq.context_len for seq in context.seqs)
+        if ctx_index.shape[0] != expected:
+            raise ValueError(f"ctx_index has {ctx_index.shape[0]} entries but the sequences hold {expected} tokens")
+    k_flat = pool.k[layer].reshape(-1, pool.k.shape[3], pool.k.shape[4])
+    v_flat = pool.v[layer].reshape(-1, pool.v.shape[3], pool.v.shape[4])
+    outputs = []
+    offset = 0
+    for seq in context.seqs:
+        slots = ctx_index[offset:offset + seq.context_len]
+        offset += seq.context_len
         q = query[0, :, seq.start:seq.start + seq.length]  # [Hq, L, D]
-        slots = torch.tensor(slot_mapping(seq.block_table, 0, seq.context_len, block_size), dtype=torch.long, device=pool.k.device)
-        k_ctx = pool.k[layer].reshape(-1, pool.k.shape[3], pool.k.shape[4])[slots].transpose(0, 1)  # [Hkv, C, D]
-        v_ctx = pool.v[layer].reshape(-1, pool.v.shape[3], pool.v.shape[4])[slots].transpose(0, 1)  # [Hkv, C, D]
+        k_ctx = k_flat[slots].transpose(0, 1)  # [Hkv, C, D]
+        v_ctx = v_flat[slots].transpose(0, 1)  # [Hkv, C, D]
         outputs.append(grouped_query_attention(q, k_ctx, v_ctx))  # [Hq, L, D]
     out = torch.cat(outputs, dim=1)  # [Hq, T, D]
     return out.transpose(0, 1).unsqueeze(0), None  # [1, T, Hq, D]

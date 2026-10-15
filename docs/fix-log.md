@@ -108,3 +108,32 @@ One entry per fix. Each names the bug, how it showed up, the root cause, the fix
 **Explanation of wall time.** On the cost-model clock, wall time fell 30%, with forward calls about equal. Per forward call, the time went from 0.22 s to 0.15 s, because the prefill chunks are smaller. On the wall clock, the run is only 13 s and the difference is within noise. Two wall-clock runs with caching off already differ, at 82 and 85 steps, and an earlier identical setting measured 117 s and 120 s. At this scale, decode steps and the fixed per-forward cost set the step count. Caching removes prefill tokens, so it cuts time per forward, not the number of forwards. The clear gain is TTFT on the cost-model clock. On the wall clock the p50 improves (0.38 to 0.32 s), but the p99 does not (4.13 to 4.37 s). With 24 requests, p99 is essentially the slowest request, which here is set by arrival bursts, not by the prefix.
 
 **Why the wall-clock tokens differ.** With the wall clock, arrivals and step timing decide which requests share a batch. Batch shape changes fp16 numerics, so two runs with caching off already differ. The cost-model clock fixes the schedule, and there the outputs are identical with caching on and off. The wall-clock token comparison is therefore not a valid test of caching correctness.
+
+---
+
+## 10. Every layer copied its slot list to the GPU
+
+- **Bug:** a decode step on the 3050 made 851 synchronizing calls, 768 of them from one line: the slot list for each sequence was copied to the GPU in every one of the 24 layers.
+- **How it showed up:** the step took about 530 ms at batch 32 with the GPU 76% idle in the profiled run. Step time grew linearly with batch size.
+- **Root cause:** the slot list depends only on the block table and context length, which do not change within a step. `paged_backend_forward` rebuilt it inside the layer loop.
+- **Fix:** `RealRunner.forward` builds input ids, positions, write slots and the context slot index into one host list, and copies it to the device once per step. `StepContext.ctx_index` carries the context index; `paged_backend_forward` takes a slice per sequence. When `ctx_index` is None (direct callers), the backend builds it once per call (`minivllm/attention/backend.py:paged_backend_forward`, `minivllm/runner/real.py:RealRunner.forward`).
+- **Test:** `tests/test_step_overhead.py::test_decode_step_syncs_do_not_grow_with_batch_size` (CUDA). It counts sync-debug warnings in one decode step: 3 at batch 2 and 3 at batch 8, against 851 before.
+- **Question:** why does the per-step sync count no longer depend on the number of layers, and which three syncs remain?
+
+## 11. KV pool write checked its slot range on the device, twice per layer
+
+- **Bug:** `KVPool.write` ran two `torch.any` range checks on device tensors. That is 2 syncs per layer, 48 per step.
+- **How it showed up:** the same 851-sync count; removing the checks alone moved step time by less than the noise, because the copy in fix 10 was the larger stall.
+- **Root cause:** a device-side `any()` returns a value the host must read before it can continue.
+- **Fix:** `KVPool.write(..., check_range=True)`. The runner has already checked the slots on the host (they come from block tables), so the backend passes `check_range=not context.validated`. The default still checks, so direct callers keep the P19 errors (`minivllm/attention/kv_pool.py:KVPool.write`).
+- **Test:** `tests/test_step_overhead.py::test_write_without_range_check_stores_the_same_values` and `::test_default_write_still_rejects_out_of_range_slot`.
+- **Question:** why keep the check as the default when the hot path turns it off?
+
+## 12. Sampling read one token per sequence from the device
+
+- **Bug:** `Engine.step` called `int(logits[row].argmax())` for each sequence, so 32 syncs per step at batch 32.
+- **How it showed up:** the sampling and bookkeeping phase took 31 ms per step (4.8%) in the profile.
+- **Root cause:** each `int()` reads one device scalar and blocks the host until the GPU reaches it.
+- **Fix:** gather the sampled rows into one index tensor, take one `argmax(dim=-1)` over them, and copy the result with one `.tolist()` (`minivllm/engine.py:Engine.step`).
+- **Test:** the greedy-equals-HF gates (`tests/test_p23_backend.py::test_real_model_greedy_matches_generate` with `MINIVLLM_REAL_MODEL`, and `tests/test_baselines.py` gate tests), plus the sync count test above.
+- **Question:** the step still copies the row index to the device. Why is that one copy not a per-sequence sync?

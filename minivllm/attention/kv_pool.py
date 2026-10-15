@@ -67,10 +67,12 @@ class KVPool:
         self.v = torch.zeros(num_layers, num_blocks, block_size, num_kv_heads, head_dim, dtype=dtype, device=device)
         
 
-    def write(self, layer: int, slots: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> None:
+    def write(self, layer: int, slots: torch.Tensor, k: torch.Tensor, v: torch.Tensor, check_range: bool = True) -> None:
         """Store row i of ``k`` and ``v`` at flat slot ``slots[i]`` in ``layer``.
 
-        Raises ValueError for an out-of-range slot or a shape mismatch.
+        Raises ValueError for an out-of-range slot or a shape mismatch. check_range=False skips the
+        slot range check, which reads slots on the device and syncs. Use it only when the caller
+        has already checked the slots (the runner does, from host lists).
         """
         if layer < 0 or layer >= self.k.shape[0]:
             raise ValueError(f"layer {layer} is out of range 0..{self.k.shape[0]-1}")
@@ -82,7 +84,7 @@ class KVPool:
             raise ValueError(f"v must have shape [N, num_kv_heads, head_dim], got {v.shape}")
         num_blocks = self.k.shape[1]
         block_size = self.k.shape[2]
-        if torch.any(slots < 0) or torch.any(slots >= num_blocks * block_size):
+        if check_range and (torch.any(slots < 0) or torch.any(slots >= num_blocks * block_size)):
             raise ValueError(f"slots must be in range 0..{num_blocks * block_size - 1}")
         block_indices = slots // block_size
         offset_indices = slots % block_size

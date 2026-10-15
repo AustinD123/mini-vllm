@@ -189,7 +189,12 @@ class Engine:
             start += n
 
         logits = self.runner.forward(token_ids, slices)
-        sampled = {seq_id: int(logits[row].argmax()) for seq_id, row in sample_rows.items()}
+        # One argmax over the sampled rows and one host copy, instead of a sync per sequence.
+        sampled: dict[int, int] = {}
+        if sample_rows:
+            rows = torch.tensor(list(sample_rows.values()), dtype=torch.long, device=logits.device)
+            picks = logits.index_select(0, rows).argmax(dim=-1).tolist()
+            sampled = dict(zip(sample_rows, picks))
         for seq_id, token in sampled.items():
             self.tokens[seq_id].append(token)
         finished = self.scheduler.update(out, sampled)
